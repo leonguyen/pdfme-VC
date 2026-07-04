@@ -1,6 +1,12 @@
 import type * as CSS from 'csstype';
 import type { Font as FontKitFont } from 'fontkit';
-import { UIRenderProps, getDefaultFont } from '@pdfme/common';
+import {
+  UIRenderProps,
+  getDefaultFont,
+  getInternalLinkTarget,
+  mm2pt,
+  normalizeLinkHref,
+} from '@pdfme/common';
 import type { TextSchema } from './types.js';
 import {
   DEFAULT_FONT_SIZE,
@@ -13,14 +19,29 @@ import {
   DEFAULT_CHARACTER_SPACING,
   DEFAULT_FONT_COLOR,
   PLACEHOLDER_FONT_COLOR,
+  CODE_BACKGROUND_COLOR,
+  SYNTHETIC_BOLD_CSS_TEXT_SHADOW,
+  TEXT_FORMAT_INLINE_MARKDOWN,
 } from './constants.js';
 import {
   calculateDynamicFontSize,
   getFontKitFont,
   getBrowserVerticalFontAdjustments,
   isFirefox,
+  splitTextToSize,
 } from './helper.js';
+import { parseInlineMarkdown, stripInlineMarkdown } from './inlineMarkdown.js';
+import { applyTextLineRange, plainTextLinesToValue } from './measure.js';
+import { shouldUseDynamicFontSize } from './overflow.js';
+import {
+  calculateDynamicRichTextFontSize,
+  isInlineMarkdownTextSchema,
+  layoutRichTextLines,
+  resolveRichTextRuns,
+} from './richText.js';
 import { isEditable } from '../utils.js';
+import { getTextLineRange } from '../splitRange.js';
+import { getBoxContentArea, getBoxInsets, hasBoxDimension } from '../box.js';
 
 const replaceUnsupportedChars = (text: string, fontKitFont: FontKitFont): string => {
   const charSupportCache: { [char: string]: boolean } = {};
@@ -42,8 +63,7 @@ const replaceUnsupportedChars = (text: string, fontKitFont: FontKitFont): string
         return segment;
       }
 
-      return segment
-        .split('')
+      return Array.from(segment)
         .map((char) => {
           if (/\s/.test(char) || char.charCodeAt(0) < 32) {
             return char;
@@ -57,9 +77,26 @@ const replaceUnsupportedChars = (text: string, fontKitFont: FontKitFont): string
 };
 
 export const uiRender = async (arg: UIRenderProps<TextSchema>) => {
-  const { value, schema, mode, onChange, stopEditing, tabIndex, placeholder, options, _cache } =
-    arg;
-  const usePlaceholder = isEditable(mode, schema) && placeholder && !value;
+  const {
+    value,
+    schema,
+    basePdf,
+    mode,
+    onChange,
+    stopEditing,
+    tabIndex,
+    placeholder,
+    options,
+    _cache,
+  } = arg;
+  const hasInlineMarkdownFormat = schema.textFormat === TEXT_FORMAT_INLINE_MARKDOWN;
+  const enableInlineMarkdown = isInlineMarkdownTextSchema(schema);
+  const isReadOnlySplitInlineMarkdownFormChunk =
+    mode === 'form' && Boolean(getTextLineRange(schema)) && hasInlineMarkdownFormat;
+  const renderInlineMarkdownReadOnlyChunk =
+    enableInlineMarkdown || isReadOnlySplitInlineMarkdownFormChunk;
+  const editable = isEditable(mode, schema) && !isReadOnlySplitInlineMarkdownFormChunk;
+  const usePlaceholder = editable && placeholder && !value;
   const getText = (element: HTMLDivElement) => {
     let text = element.innerText;
     if (text.endsWith('\n')) {
@@ -74,24 +111,59 @@ export const uiRender = async (arg: UIRenderProps<TextSchema>) => {
     font,
     _cache as Map<string, import('fontkit').Font>,
   );
+  const enableDynamicFontSize = shouldUseDynamicFontSize(schema, basePdf);
+  const displayValue = enableInlineMarkdown ? stripInlineMarkdown(value) : value;
+  const dynamicRichTextFontSize =
+    enableInlineMarkdown && enableDynamicFontSize
+      ? await calculateDynamicRichTextFontSize({
+          value: usePlaceholder ? (placeholder as string) : value,
+          schema,
+          font,
+          _cache,
+        })
+      : undefined;
   const textBlock = buildStyledTextContainer(
-    arg,
+    isReadOnlySplitInlineMarkdownFormChunk ? { ...arg, mode: 'viewer' } : arg,
     fontKitFont,
-    usePlaceholder ? placeholder : value,
+    usePlaceholder ? placeholder : displayValue,
+    dynamicRichTextFontSize,
   );
 
-  const processedText = replaceUnsupportedChars(value, fontKitFont);
+  const processedText = replaceUnsupportedChars(
+    getRangedPlainTextValue({
+      value,
+      schema,
+      fontKitFont,
+      fontSize: schema.fontSize ?? DEFAULT_FONT_SIZE,
+    }),
+    fontKitFont,
+  );
 
-  if (!isEditable(mode, schema)) {
+  if (!editable) {
+    if (renderInlineMarkdownReadOnlyChunk) {
+      await renderInlineMarkdownReadOnly({
+        textBlock,
+        value,
+        schema,
+        font,
+        _cache,
+      });
+      return;
+    }
+
     // Read-only mode
     textBlock.innerHTML = processedText
       .split('')
-      .map(
-        (l, i) =>
-          `<span style="letter-spacing:${
-            String(value).length === i + 1 ? 0 : 'inherit'
-          };">${l}</span>`,
-      )
+      .map((l, i) => {
+        const escaped = l
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;');
+        return `<span style="letter-spacing:${
+          String(value).length === i + 1 ? 0 : 'inherit'
+        };">${escaped}</span>`;
+      })
       .join('');
     return;
   }
@@ -104,7 +176,7 @@ export const uiRender = async (arg: UIRenderProps<TextSchema>) => {
     if (stopEditing) stopEditing();
   });
 
-  if (schema.dynamicFontSize) {
+  if (enableDynamicFontSize) {
     let dynamicFontSize: undefined | number = undefined;
 
     textBlock.addEventListener('keyup', () => {
@@ -115,7 +187,9 @@ export const uiRender = async (arg: UIRenderProps<TextSchema>) => {
           dynamicFontSize = calculateDynamicFontSize({
             textSchema: schema,
             fontKitFont,
-            value: getText(textBlock),
+            value: isInlineMarkdownTextSchema(schema)
+              ? stripInlineMarkdown(getText(textBlock))
+              : getText(textBlock),
             startingFontSize: dynamicFontSize,
           });
           textBlock.style.fontSize = `${dynamicFontSize}pt`;
@@ -159,16 +233,133 @@ export const uiRender = async (arg: UIRenderProps<TextSchema>) => {
   }
 };
 
+const renderInlineMarkdownReadOnly = async (arg: {
+  textBlock: HTMLDivElement;
+  value: string;
+  schema: TextSchema;
+  font: NonNullable<UIRenderProps<TextSchema>['options']['font']>;
+  _cache: Map<string | number, unknown>;
+}) => {
+  const { textBlock, value, schema, font, _cache } = arg;
+  const runs = await resolveRichTextRuns({
+    runs: parseInlineMarkdown(value),
+    schema,
+    font,
+    _cache,
+  });
+  const lineRange = getTextLineRange(schema);
+  if (lineRange) {
+    const lines = applyTextLineRange(
+      layoutRichTextLines({
+        runs,
+        fontSize: schema.fontSize ?? DEFAULT_FONT_SIZE,
+        characterSpacing: schema.characterSpacing ?? DEFAULT_CHARACTER_SPACING,
+        boxWidthInPt: mm2pt(getBoxContentArea(schema).width),
+      }),
+      lineRange,
+    );
+
+    textBlock.innerHTML = '';
+    lines.forEach((line, lineIndex) => {
+      line.runs.forEach((run) => {
+        appendInlineMarkdownRun({ textBlock, run, schema, font });
+      });
+      if (lineIndex < lines.length - 1) textBlock.appendChild(document.createElement('br'));
+    });
+    return;
+  }
+
+  textBlock.innerHTML = '';
+  runs.forEach((run) => {
+    appendInlineMarkdownRun({ textBlock, run, schema, font });
+  });
+};
+
+const appendInlineMarkdownRun = (arg: {
+  textBlock: HTMLDivElement;
+  run: Awaited<ReturnType<typeof resolveRichTextRuns>>[number];
+  schema: TextSchema;
+  font: NonNullable<UIRenderProps<TextSchema>['options']['font']>;
+}) => {
+  const { textBlock, run, schema, font } = arg;
+  const href = run.href ? normalizeLinkHref(run.href) : undefined;
+  const span = href ? document.createElement('a') : document.createElement('span');
+  const processedText = replaceUnsupportedChars(run.text, run.fontKitFont);
+  const textDecorations: string[] = [];
+
+  span.textContent = processedText;
+  if (href) {
+    const anchor = span as HTMLAnchorElement;
+    anchor.href = href;
+    if (!getInternalLinkTarget(href)) {
+      anchor.target = '_blank';
+      anchor.rel = 'noopener noreferrer';
+    }
+    textDecorations.push('underline');
+  }
+  if (run.fontName) {
+    span.style.fontFamily = `'${run.fontName}'`;
+  }
+  if (run.syntheticBold) {
+    span.style.fontWeight = '800';
+    span.style.textShadow = SYNTHETIC_BOLD_CSS_TEXT_SHADOW;
+  }
+  if (run.syntheticItalic) {
+    span.style.fontStyle = 'italic';
+  }
+  if (run.strikethrough) {
+    textDecorations.push('line-through');
+  }
+  if (textDecorations.length > 0) {
+    span.style.textDecoration = textDecorations.join(' ');
+  }
+  if (run.code) {
+    span.style.backgroundColor = CODE_BACKGROUND_COLOR;
+    span.style.borderRadius = '2px';
+    span.style.padding = '0 0.15em';
+    if (!schema.fontVariants?.code || !font[schema.fontVariants.code]) {
+      span.style.fontFamily = run.fontName ? `'${run.fontName}', monospace` : 'monospace';
+    }
+  }
+  textBlock.appendChild(span);
+};
+
+const getRangedPlainTextValue = (arg: {
+  value: string;
+  schema: TextSchema;
+  fontKitFont: FontKitFont;
+  fontSize: number;
+}) => {
+  const { value, schema, fontKitFont, fontSize } = arg;
+  const lineRange = getTextLineRange(schema);
+  if (!lineRange) return value;
+
+  const lines = applyTextLineRange(
+    splitTextToSize({
+      value,
+      characterSpacing: schema.characterSpacing ?? DEFAULT_CHARACTER_SPACING,
+      fontSize,
+      fontKitFont,
+      boxWidthInPt: mm2pt(getBoxContentArea(schema).width),
+    }),
+    lineRange,
+  );
+  return plainTextLinesToValue(lines);
+};
+
 export const buildStyledTextContainer = (
   arg: UIRenderProps<TextSchema>,
   fontKitFont: FontKitFont,
   value: string,
+  resolvedDynamicFontSize?: number,
 ) => {
   const { schema, rootElement, mode } = arg;
 
-  let dynamicFontSize: undefined | number = undefined;
+  let dynamicFontSize: undefined | number = resolvedDynamicFontSize;
+  const characterSpacing = schema.characterSpacing ?? DEFAULT_CHARACTER_SPACING;
+  const editable = isEditable(mode, schema);
 
-  if (schema.dynamicFontSize && value) {
+  if (dynamicFontSize === undefined && shouldUseDynamicFontSize(schema, arg.basePdf) && value) {
     dynamicFontSize = calculateDynamicFontSize({
       textSchema: schema,
       fontKitFont,
@@ -188,20 +379,38 @@ export const buildStyledTextContainer = (
 
   const topAdjustment = topAdj.toString();
   const bottomAdjustment = bottomAdj.toString();
+  const verticalAlignment = schema.verticalAlignment ?? DEFAULT_VERTICAL_ALIGNMENT;
+  const isTopAligned = verticalAlignment === VERTICAL_ALIGN_TOP;
 
   const container = document.createElement('div');
+  const { borderWidth, padding } = getBoxInsets(schema);
+  const hasPadding = hasBoxDimension(schema.padding);
+  const hasBorder = Boolean(schema.borderColor && hasBoxDimension(schema.borderWidth));
 
   const containerStyle: CSS.Properties = {
-    padding: 0,
+    padding: hasPadding
+      ? `${padding.top}mm ${padding.right}mm ${padding.bottom}mm ${padding.left}mm`
+      : 0,
     resize: 'none',
-    backgroundColor: getBackgroundColor(value, schema),
-    border: 'none',
+    backgroundColor: getBackgroundColor(schema),
+    border: hasBorder ? undefined : 'none',
+    ...(hasBorder
+      ? {
+          borderTopWidth: `${borderWidth.top}mm`,
+          borderRightWidth: `${borderWidth.right}mm`,
+          borderBottomWidth: `${borderWidth.bottom}mm`,
+          borderLeftWidth: `${borderWidth.left}mm`,
+          borderStyle: 'solid',
+          borderColor: schema.borderColor,
+        }
+      : {}),
+    ...(hasPadding || hasBorder ? { boxSizing: 'border-box' } : {}),
     display: 'flex',
     flexDirection: 'column',
-    justifyContent: mapVerticalAlignToFlex(schema.verticalAlignment),
+    justifyContent: mapVerticalAlignToFlex(verticalAlignment),
     width: '100%',
     height: '100%',
-    cursor: isEditable(mode, schema) ? 'text' : 'default',
+    cursor: editable ? 'text' : 'default',
   };
   Object.assign(container.style, containerStyle);
   rootElement.innerHTML = '';
@@ -217,7 +426,7 @@ export const buildStyledTextContainer = (
     fontFamily: schema.fontName ? `'${schema.fontName}'` : 'inherit',
     color: schema.fontColor ? schema.fontColor : DEFAULT_FONT_COLOR,
     fontSize: `${dynamicFontSize ?? schema.fontSize ?? DEFAULT_FONT_SIZE}pt`,
-    letterSpacing: `${schema.characterSpacing ?? DEFAULT_CHARACTER_SPACING}pt`,
+    letterSpacing: `${characterSpacing}pt`,
     lineHeight: `${schema.lineHeight ?? DEFAULT_LINE_HEIGHT}em`,
     textAlign: schema.alignment ?? DEFAULT_ALIGNMENT,
     whiteSpace: 'pre-wrap',
@@ -230,6 +439,9 @@ export const buildStyledTextContainer = (
     paddingTop: `${topAdjustment}px`,
     backgroundColor: 'transparent',
     textDecoration: textDecorations.join(' '),
+    // Browsers include the final letter-spacing in editable text wrapping, unlike PDF rendering.
+    ...(editable && characterSpacing > 0 ? { width: `calc(100% + ${characterSpacing}pt)` } : {}),
+    ...(isTopAligned ? { height: '100%' } : {}),
   };
 
   const textBlock = document.createElement('div');
@@ -282,7 +494,7 @@ export const mapVerticalAlignToFlex = (verticalAlignmentValue: string | undefine
   return 'flex-start';
 };
 
-const getBackgroundColor = (value: string, schema: { backgroundColor?: string }) => {
-  if (!value || !schema.backgroundColor) return 'transparent';
+const getBackgroundColor = (schema: { backgroundColor?: string }) => {
+  if (!schema.backgroundColor) return 'transparent';
   return schema.backgroundColor;
 };

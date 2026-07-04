@@ -1,14 +1,37 @@
-import { Template, Font, checkTemplate, getInputFromTemplate, getDefaultFont } from '@pdfme/common';
+import {
+  Template,
+  Font,
+  PAGE_SIZE_PRESETS,
+  checkTemplate,
+  getInputFromTemplate,
+  getDefaultFont,
+} from '@pdfme/common';
 import { Form, Viewer, Designer } from '@pdfme/ui';
-import { generate } from '@pdfme/generator';
+import { generate, generateForm } from '@pdfme/generator';
+import { toast } from 'react-toastify';
+import { getErrorMessage } from './lib/errors';
 import { getPlugins } from './plugins';
 
-export function fromKebabCase(str: string): string {
-  return str
-    .split('-')
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(' ');
-}
+const templateAssetSourceKinds = ['designer', 'jsx', 'md2pdf'] as const;
+const templateAssetStatuses = ['published', 'draft'] as const;
+
+type TemplateAssetSourceKind = (typeof templateAssetSourceKinds)[number];
+type TemplateAssetStatus = (typeof templateAssetStatuses)[number];
+
+export type TemplateAssetMetadata = {
+  description: string;
+  order?: number;
+  sourceKind: TemplateAssetSourceKind;
+  status?: TemplateAssetStatus;
+  tags: string[];
+  title: string;
+};
+
+const isTemplateAssetSourceKind = (value: unknown): value is TemplateAssetSourceKind =>
+  templateAssetSourceKinds.includes(value as TemplateAssetSourceKind);
+
+const isTemplateAssetStatus = (value: unknown): value is TemplateAssetStatus =>
+  templateAssetStatuses.includes(value as TemplateAssetStatus);
 
 export const getFontsData = (): Font => ({
   ...getDefaultFont(),
@@ -23,34 +46,37 @@ export const getFontsData = (): Font => ({
   NotoSansJP: {
     fallback: false,
     data: 'https://fonts.gstatic.com/s/notosansjp/v53/-F6jfjtqLzI2JPCgQBnw7HFyzSD-AsregP8VFBEj75vY0rw-oME.ttf',
-  }
+  },
 });
 
-export const readFile = (file: File | null, type: 'text' | 'dataURL' | 'arrayBuffer') => {
-  return new Promise<string | ArrayBuffer>((r) => {
+const getFormFontsData = (): Font =>
+  Object.fromEntries(
+    Object.entries(getFontsData()).map(([fontName, font]) => [
+      fontName,
+      { ...font, fallback: fontName === 'NotoSansJP', subset: false },
+    ]),
+  );
+
+export const readFile = (file: File, type: 'text' | 'dataURL' | 'arrayBuffer') => {
+  return new Promise<string | ArrayBuffer>((resolve, reject) => {
     const fileReader = new FileReader();
-    fileReader.addEventListener('load', (e) => {
-      if (e && e.target && e.target.result && file !== null) {
-        r(e.target.result);
+    fileReader.addEventListener('load', () => {
+      if (fileReader.result != null) {
+        resolve(fileReader.result);
+      } else {
+        reject(new Error(`Failed to read file "${file.name}"`));
       }
     });
-    if (file !== null) {
-      if (type === 'text') {
-        fileReader.readAsText(file);
-      } else if (type === 'dataURL') {
-        fileReader.readAsDataURL(file);
-      } else if (type === 'arrayBuffer') {
-        fileReader.readAsArrayBuffer(file);
-      }
+    fileReader.addEventListener('error', () => {
+      reject(fileReader.error ?? new Error(`Failed to read file "${file.name}"`));
+    });
+    if (type === 'text') {
+      fileReader.readAsText(file);
+    } else if (type === 'dataURL') {
+      fileReader.readAsDataURL(file);
+    } else {
+      fileReader.readAsArrayBuffer(file);
     }
-  });
-};
-
-const getTemplateFromJsonFile = (file: File) => {
-  return readFile(file, 'text').then((jsonStr) => {
-    const template: Template = JSON.parse(jsonStr as string);
-    checkTemplate(template);
-    return template;
   });
 };
 
@@ -68,24 +94,6 @@ export const downloadJsonFile = (json: unknown, title: string) => {
   }
 };
 
-export const handleLoadTemplate = (
-  e: React.ChangeEvent<HTMLInputElement>,
-  currentRef: Designer | Form | Viewer | null
-) => {
-  if (e.target && e.target.files && e.target.files[0]) {
-    getTemplateFromJsonFile(e.target.files[0])
-      .then((t) => {
-        if (!currentRef) return;
-        currentRef.updateTemplate(t);
-      })
-      .catch((e) => {
-        alert(`Invalid template file.
---------------------------
-${e}`);
-      });
-  }
-};
-
 export const translations: { label: string; value: string }[] = [
   { value: 'en', label: 'English' },
   { value: 'zh', label: 'Chinese' },
@@ -100,18 +108,21 @@ export const translations: { label: string; value: string }[] = [
   { value: 'es', label: 'Spanish' },
 ];
 
-export const generatePDF = async (currentRef: Designer | Form | Viewer | null) => {
-  if (!currentRef) return;
+export const generatePDF = async (
+  currentRef: Designer | Form | Viewer | null,
+  output: 'pdf' | 'form' = 'pdf',
+): Promise<boolean> => {
+  if (!currentRef) return false;
   const template = currentRef.getTemplate();
   const options = currentRef.getOptions();
   const inputs =
     typeof (currentRef as Viewer | Form).getInputs === 'function'
       ? (currentRef as Viewer | Form).getInputs()
       : getInputFromTemplate(template);
-  const font = getFontsData();
+  const font = output === 'form' ? getFormFontsData() : getFontsData();
 
   try {
-    const pdf = await generate({
+    const pdf = await (output === 'form' ? generateForm : generate)({
       template,
       inputs,
       options: {
@@ -122,37 +133,87 @@ export const generatePDF = async (currentRef: Designer | Form | Viewer | null) =
       plugins: getPlugins(),
     });
 
-    const blob = new Blob([pdf.buffer], { type: 'application/pdf' });
-    window.open(URL.createObjectURL(blob));
+    // Copy into a fresh Uint8Array so the Blob never picks up extra bytes
+    // when the result is a view over a larger ArrayBuffer.
+    const blob = new Blob([new Uint8Array(pdf)], { type: 'application/pdf' });
+    const url = URL.createObjectURL(blob);
+    window.open(url);
+    // Release the object URL once the new tab has had time to load it.
+    window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    return true;
   } catch (e) {
-    alert(e + '\n\nCheck the console for full stack trace');
-    throw e;
+    console.error(e);
+    toast.error(`${getErrorMessage(e)} (check the console for the full stack trace)`);
+    return false;
   }
 };
 
 export const isJsonString = (str: string) => {
   try {
     JSON.parse(str);
-  } catch (e) {
+  } catch {
     return false;
   }
   return true;
 };
 
+export const DEFAULT_PLAYGROUND_TEMPLATE_ID = 'invoice';
+
 export const getBlankTemplate = () =>
   ({
     schemas: [{}],
     basePdf: {
-      width: 210,
-      height: 297,
+      ...PAGE_SIZE_PRESETS.A4,
       padding: [20, 10, 20, 10],
     },
-  } as Template);
+  }) as Template;
 
 export const getTemplateById = async (templateId: string): Promise<Template> => {
-  const template = await fetch(`/template-assets/${templateId}/template.json`).then((res) =>
-    res.json()
-  );
+  const response = await fetch(`/template-assets/${templateId}/template.json`);
+  if (!response.ok) {
+    throw new Error(`Failed to load template "${templateId}": ${response.statusText}`);
+  }
+
+  const template = (await response.json()) as Template;
   checkTemplate(template);
-  return template as Template;
+  return template;
 };
+
+export const getTemplateMetadataById = async (
+  templateId: string,
+): Promise<TemplateAssetMetadata> => {
+  const response = await fetch(`/template-assets/${templateId}/metadata.json`);
+  if (!response.ok) {
+    throw new Error(`Failed to load template metadata: ${response.statusText}`);
+  }
+
+  const metadata = (await response.json()) as Partial<TemplateAssetMetadata>;
+  if (!metadata.title?.trim()) {
+    throw new Error(`Template metadata "${templateId}" must include title.`);
+  }
+  if (!metadata.description?.trim()) {
+    throw new Error(`Template metadata "${templateId}" must include description.`);
+  }
+  if (!isTemplateAssetSourceKind(metadata.sourceKind)) {
+    throw new Error(`Template metadata "${templateId}" must include sourceKind.`);
+  }
+  if (metadata.status != null && !isTemplateAssetStatus(metadata.status)) {
+    throw new Error(`Template metadata "${templateId}" has unsupported status.`);
+  }
+  if (!metadata.tags || metadata.tags.length === 0) {
+    throw new Error(`Template metadata "${templateId}" must include tags.`);
+  }
+
+  return {
+    description: metadata.description,
+    order: metadata.order,
+    sourceKind: metadata.sourceKind,
+    status: metadata.status,
+    tags: metadata.tags,
+    title: metadata.title.trim(),
+  };
+};
+
+export const getDefaultPlaygroundTemplate = () => getTemplateById(DEFAULT_PLAYGROUND_TEMPLATE_ID);
+export const getDefaultPlaygroundTemplateMetadata = () =>
+  getTemplateMetadataById(DEFAULT_PLAYGROUND_TEMPLATE_ID);

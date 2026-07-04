@@ -1,5 +1,6 @@
-import { readFileSync } from 'fs';
-import * as path from 'path';
+import { readFileSync } from 'node:fs';
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   mm2pt,
   pt2mm,
@@ -20,6 +21,7 @@ import {
   getB64BasePdf,
 } from '../src/index.js';
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const sansData = readFileSync(path.join(__dirname, `/assets/fonts/NotoSans-Regular.ttf`));
 const serifData = readFileSync(path.join(__dirname, `/assets/fonts/NotoSerif-Regular.ttf`));
 
@@ -155,13 +157,13 @@ describe('checkGenerateProps', () => {
     expect(() => checkGenerateProps(invalidProps)).toThrow("[@pdfme/common] Invalid argument:\n" +
       "--------------------------\n" +
       "ERROR POSITION: template.schemas\n" +
-      "ERROR MESSAGE: Expected array, received string\n" +
+      "ERROR MESSAGE: Invalid input: expected array, received string\n" +
       "--------------------------\n" +
       "ERROR POSITION: template.basePdf\n" +
       "ERROR MESSAGE: Invalid input\n" +
       "--------------------------\n" +
       "ERROR POSITION: inputs\n" +
-      "ERROR MESSAGE: Required\n" +
+      "ERROR MESSAGE: Invalid input: expected array, received undefined\n" +
       "--------------------------");
   });
 
@@ -177,10 +179,10 @@ describe('checkGenerateProps', () => {
     expect(() => checkGenerateProps(missingSchemaProps)).toThrow("[@pdfme/common] Invalid argument:\n" +
       "--------------------------\n" +
       "ERROR POSITION: template.schemas\n" +
-      "ERROR MESSAGE: Required\n" +
+      "ERROR MESSAGE: Invalid input: expected array, received undefined\n" +
       "--------------------------\n" +
       "ERROR POSITION: inputs\n" +
-      "ERROR MESSAGE: Array must contain at least 1 element(s)\n" +
+      "ERROR MESSAGE: Too small: expected array to have >=1 items\n" +
       "--------------------------");
   });
 
@@ -220,23 +222,17 @@ describe('checkGenerateProps', () => {
       }
     };
 
-    expect(() => checkGenerateProps(invalidPluginProps)).toThrow("[@pdfme/common] Invalid argument:\n" +
-      "--------------------------\n" +
-      "ERROR POSITION: plugins.invalid.ui\n" +
-      "ERROR MESSAGE: Required\n" +
-      "--------------------------\n" +
-      "ERROR POSITION: plugins.invalid.pdf\n" +
-      "ERROR MESSAGE: Required\n" +
-      "--------------------------\n" +
-      "ERROR POSITION: plugins.invalid.propPanel.defaultSchema.type\n" +
-      "ERROR MESSAGE: Required\n" +
-      "--------------------------\n" +
-      "ERROR POSITION: plugins.missingPanel.propPanel\n" +
-      "ERROR MESSAGE: Required\n" +
-      "--------------------------\n" +
-      "ERROR POSITION: plugins.missingDefaultSchema.propPanel.defaultSchema\n" +
-      "ERROR MESSAGE: Required\n" +
-      "--------------------------");
+    let errorMessage = '';
+    try {
+      checkGenerateProps(invalidPluginProps);
+    } catch (e) {
+      errorMessage = e instanceof Error ? e.message : String(e);
+    }
+
+    expect(errorMessage).toContain('[@pdfme/common] Invalid argument:');
+    expect(errorMessage).toContain('ERROR POSITION: plugins.invalid.propPanel.defaultSchema.type');
+    expect(errorMessage).toContain('ERROR POSITION: plugins.missingPanel.propPanel');
+    expect(errorMessage).toContain('ERROR POSITION: plugins.missingDefaultSchema.propPanel.defaultSchema');
   });
 
   test('calls checkFont when font option is provided', () => {

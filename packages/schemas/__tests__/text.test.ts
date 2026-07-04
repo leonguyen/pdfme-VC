@@ -1,7 +1,10 @@
-import { readFileSync } from 'fs';
-import * as path from 'path';
+import { readFileSync } from 'node:fs';
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { afterEach, vi } from 'vitest';
 import type { Font as FontKitFont } from 'fontkit';
-import { Font, getDefaultFont } from '@pdfme/common';
+import { Font, getDefaultFont, mm2pt } from '@pdfme/common';
+import type { BasePdf, PropPanelSchema, PropPanelWidgetProps } from '@pdfme/common';
 import {
   calculateDynamicFontSize,
   getBrowserVerticalFontAdjustments,
@@ -10,13 +13,58 @@ import {
   getSplittedLines,
   filterStartJP,
   filterEndJP,
+  widthOfTextAtSize,
 } from '../src/text/helper.js';
-import { LINE_START_FORBIDDEN_CHARS, LINE_END_FORBIDDEN_CHARS } from '../src/text/constants.js';
+import {
+  escapeInlineMarkdown,
+  parseInlineMarkdown,
+  stripInlineMarkdown,
+} from '../src/text/inlineMarkdown.js';
+import {
+  calculateDynamicRichTextFontSize,
+  getRichTextLineText,
+  isInlineMarkdownTextSchema,
+  layoutRichTextLines,
+  resolveFontVariant,
+  type ResolvedRichTextRun,
+} from '../src/text/richText.js';
+import {
+  LINE_START_FORBIDDEN_CHARS,
+  LINE_END_FORBIDDEN_CHARS,
+  TEXT_OVERFLOW_EXPAND,
+  TEXT_OVERFLOW_VISIBLE,
+} from '../src/text/constants.js';
+import { getDynamicLayoutForText } from '../src/text/dynamicTemplate.js';
+import { mergeTextLineRangeValue } from '../src/text/measure.js';
+import { shouldUseDynamicFontSize } from '../src/text/overflow.js';
+import { propPanel as textPropPanel } from '../src/text/propPanel.js';
+import { getDynamicLayoutForMultiVariableText } from '../src/multiVariableText/dynamicTemplate.js';
 
 import { FontWidthCalcValues, TextSchema } from '../src/text/types.js';
+import type { MultiVariableTextSchema } from '../src/multiVariableText/types.js';
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const sansData = readFileSync(path.join(__dirname, `/assets/fonts/SauceHanSansJP.ttf`));
 const serifData = readFileSync(path.join(__dirname, `/assets/fonts/SauceHanSerifJP.ttf`));
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+const createMockFont = (
+  advanceWidth: number,
+  hasGlyphForCodePoint = (_codePoint: number) => true,
+) =>
+  ({
+    unitsPerEm: 1000,
+    ascent: 800,
+    descent: -200,
+    bbox: { maxY: 800, minY: -200 },
+    layout: (text: string) => ({
+      glyphs: Array.from(text, () => ({ advanceWidth })),
+    }),
+    hasGlyphForCodePoint,
+  }) as unknown as FontKitFont;
 
 const getSampleFont = (): Font => ({
   SauceHanSansJP: { fallback: true, data: sansData },
@@ -42,32 +90,645 @@ const getTextSchema = () => {
   return textSchema;
 };
 
-describe('getSplitPosition test with mocked font width calculations', () => {
-  /**
-   * To simplify these tests we mock the widthOfTextAtSize function to return
-   * the length of the text in number of characters.
-   * Therefore, setting the boxWidthInPt to 5 should result in a split after 5 characters.
-   */
+const getTextPropPanelSchema = ({
+  basePdf,
+  activeSchema,
+}: {
+  basePdf?: BasePdf;
+  activeSchema?: Partial<TextSchema>;
+} = {}) => {
+  if (typeof textPropPanel.schema !== 'function') {
+    throw new Error('Text propPanel schema should be a function.');
+  }
 
-  let widthOfTextAtSizeSpy: jest.SpyInstance<number, [string]>;
+  return textPropPanel.schema({
+    activeSchema: {
+      ...getTextSchema(),
+      id: 'text-id',
+      ...activeSchema,
+    },
+    activeElements: [],
+    changeSchemas: () => undefined,
+    schemas: [],
+    basePdf,
+    options: { font: getSampleFont() },
+    theme: {},
+    i18n: (key: string) => key,
+  } as unknown as Omit<PropPanelWidgetProps, 'rootElement'>);
+};
 
-  beforeAll(() => {
-    // @ts-ignore
-    widthOfTextAtSizeSpy = jest.spyOn(require('../src/text/helper'), 'widthOfTextAtSize');
-    widthOfTextAtSizeSpy.mockImplementation((text) => {
-      return text.length;
+const getOverflowOptionValues = (schema: Record<string, PropPanelSchema>) => {
+  const overflow = schema.overflow as PropPanelSchema & {
+    props: { options: Array<{ value: string }> };
+  };
+  return overflow.props.options.map((option) => option.value);
+};
+
+describe('parseInlineMarkdown', () => {
+  it('parses supported inline markdown styles', () => {
+    const result = parseInlineMarkdown(
+      'Hello **bold** and *italic* and ***both*** and ~~gone~~ and `code`',
+    );
+
+    expect(result).toEqual([
+      { text: 'Hello ' },
+      { text: 'bold', bold: true },
+      { text: ' and ' },
+      { text: 'italic', italic: true },
+      { text: ' and ' },
+      { text: 'both', bold: true, italic: true },
+      { text: ' and ' },
+      { text: 'gone', strikethrough: true },
+      { text: ' and ' },
+      { text: 'code', code: true },
+    ]);
+  });
+
+  it('keeps escaped and unmatched delimiters as text', () => {
+    expect(parseInlineMarkdown('\\*\\*literal\\*\\* and **unclosed')).toEqual([
+      { text: '**literal** and **unclosed' },
+    ]);
+  });
+
+  it('strips inline markdown markers', () => {
+    expect(stripInlineMarkdown('Hello **bold** and `code`')).toBe('Hello bold and code');
+  });
+
+  it('parses links as href runs while preserving nested style', () => {
+    expect(parseInlineMarkdown('See [**pdfme** docs](https://pdfme.com/docs).')).toEqual([
+      { text: 'See ' },
+      { text: 'pdfme', bold: true, href: 'https://pdfme.com/docs' },
+      { text: ' docs', href: 'https://pdfme.com/docs' },
+      { text: '.' },
+    ]);
+    expect(stripInlineMarkdown('See [pdfme](https://pdfme.com).')).toBe('See pdfme.');
+  });
+
+  it('only parses safe link destinations', () => {
+    expect(
+      parseInlineMarkdown('[web](https://pdfme.com) [mail](mailto:hello@pdfme.com) [toc](#toc)'),
+    ).toEqual([
+      { text: 'web', href: 'https://pdfme.com' },
+      { text: ' ' },
+      { text: 'mail', href: 'mailto:hello@pdfme.com' },
+      { text: ' ' },
+      { text: 'toc', href: '#toc' },
+    ]);
+    expect(parseInlineMarkdown('[bad](javascript:alert(1)) [file](file:///tmp/a)')).toEqual([
+      { text: '[bad](javascript:alert(1)) [file](file:///tmp/a)' },
+    ]);
+  });
+
+  it('handles empty link labels and destinations explicitly', () => {
+    expect(parseInlineMarkdown('Go [](https://pdfme.com).')).toEqual([{ text: 'Go .' }]);
+    expect(parseInlineMarkdown('Go [empty]().')).toEqual([{ text: 'Go [empty]().' }]);
+  });
+
+  it('keeps escaped links as literal text', () => {
+    const escaped = escapeInlineMarkdown('[pdfme](https://pdfme.com)');
+
+    expect(escaped).toBe('\\[pdfme\\]\\(https://pdfme.com\\)');
+    expect(parseInlineMarkdown(escaped)).toEqual([{ text: '[pdfme](https://pdfme.com)' }]);
+  });
+
+  it('escapes markdown markers for literal content', () => {
+    const escaped = escapeInlineMarkdown('**literal** and `code` with \\');
+
+    expect(escaped).toBe('\\*\\*literal\\*\\* and \\`code\\` with \\\\');
+    expect(parseInlineMarkdown(`**${escaped}**`)).toEqual([
+      { text: '**literal** and `code` with \\', bold: true },
+    ]);
+  });
+});
+
+describe('resolveFontVariant', () => {
+  const font = {
+    Base: { data: new Uint8Array(), fallback: true },
+    Bold: { data: new Uint8Array() },
+    Italic: { data: new Uint8Array() },
+    BoldItalic: { data: new Uint8Array() },
+    Mono: { data: new Uint8Array() },
+  } as unknown as Font;
+
+  it('uses loaded variant fonts when they are available', () => {
+    const schema = {
+      ...getTextSchema(),
+      fontName: 'Base',
+      fontVariants: { bold: 'Bold', italic: 'Italic', boldItalic: 'BoldItalic', code: 'Mono' },
+    };
+
+    expect(resolveFontVariant({ text: 'x', bold: true }, schema, font)).toEqual({
+      fontName: 'Bold',
+      syntheticBold: false,
+      syntheticItalic: false,
+    });
+    expect(resolveFontVariant({ text: 'x', bold: true, italic: true }, schema, font)).toEqual({
+      fontName: 'BoldItalic',
+      syntheticBold: false,
+      syntheticItalic: false,
+    });
+    expect(resolveFontVariant({ text: 'x', code: true }, schema, font)).toEqual({
+      fontName: 'Mono',
+      syntheticBold: false,
+      syntheticItalic: false,
     });
   });
 
-  afterAll(() => {
-    widthOfTextAtSizeSpy.mockRestore();
+  it('falls back to synthetic styling when variant fonts are missing', () => {
+    const schema = {
+      ...getTextSchema(),
+      fontName: 'Base',
+      fontVariants: { bold: 'MissingBold', italic: 'Italic' },
+    };
+
+    expect(resolveFontVariant({ text: 'x', bold: true }, schema, font)).toEqual({
+      fontName: 'Base',
+      syntheticBold: true,
+      syntheticItalic: false,
+    });
+    expect(resolveFontVariant({ text: 'x', bold: true, italic: true }, schema, font)).toEqual({
+      fontName: 'Italic',
+      syntheticBold: true,
+      syntheticItalic: false,
+    });
   });
 
-  const mockedFont: FontKitFont = {} as FontKitFont;
+  it('can disable synthetic fallback or throw on missing variants', () => {
+    const plainSchema = { ...getTextSchema(), fontName: 'Base', fontVariantFallback: 'plain' };
+    expect(resolveFontVariant({ text: 'x', bold: true }, plainSchema, font)).toEqual({
+      fontName: 'Base',
+      syntheticBold: false,
+      syntheticItalic: false,
+    });
+
+    const errorSchema = { ...getTextSchema(), fontName: 'Base', fontVariantFallback: 'error' };
+    expect(() => resolveFontVariant({ text: 'x', italic: true }, errorSchema, font)).toThrow(
+      'Missing font variant',
+    );
+  });
+});
+
+describe('isInlineMarkdownTextSchema', () => {
+  it('enables inline markdown for read-only text schemas only', () => {
+    expect(
+      isInlineMarkdownTextSchema({
+        ...getTextSchema(),
+        textFormat: 'inline-markdown',
+        readOnly: true,
+      }),
+    ).toBe(true);
+
+    expect(
+      isInlineMarkdownTextSchema({
+        ...getTextSchema(),
+        textFormat: 'inline-markdown',
+        readOnly: false,
+      }),
+    ).toBe(false);
+  });
+
+  it('keeps inline markdown available for multiVariableText schemas', () => {
+    expect(
+      isInlineMarkdownTextSchema({
+        ...getTextSchema(),
+        type: 'multiVariableText',
+        textFormat: 'inline-markdown',
+        readOnly: false,
+      }),
+    ).toBe(true);
+  });
+});
+
+describe('text prop panel', () => {
+  it('offers overflow expand for blank basePdf', () => {
+    const schema = getTextPropPanelSchema({
+      basePdf: { width: 210, height: 297, padding: [10, 10, 10, 10] },
+    });
+
+    expect(getOverflowOptionValues(schema)).toEqual([
+      TEXT_OVERFLOW_VISIBLE,
+      TEXT_OVERFLOW_EXPAND,
+    ]);
+  });
+
+  it('hides overflow expand for custom basePdf', () => {
+    const schema = getTextPropPanelSchema({
+      basePdf: 'data:application/pdf;base64,AA==' as BasePdf,
+    });
+
+    expect(getOverflowOptionValues(schema)).toEqual([TEXT_OVERFLOW_VISIBLE]);
+  });
+
+  it('keeps overflow expand available for text-derived schemas that do not use text expand', () => {
+    const schema = getTextPropPanelSchema({
+      basePdf: 'data:application/pdf;base64,AA==' as BasePdf,
+      activeSchema: { type: 'select' },
+    });
+
+    expect(getOverflowOptionValues(schema)).toEqual([
+      TEXT_OVERFLOW_VISIBLE,
+      TEXT_OVERFLOW_EXPAND,
+    ]);
+  });
+
+  it('keeps dynamic font size controls enabled when custom basePdf has stale overflow expand', () => {
+    const schema = getTextPropPanelSchema({
+      basePdf: 'data:application/pdf;base64,AA==' as BasePdf,
+      activeSchema: {
+        overflow: TEXT_OVERFLOW_EXPAND,
+        dynamicFontSize: { min: 20, max: 30, fit: 'vertical' },
+      },
+    });
+    const dynamicFontSize = schema.dynamicFontSize as PropPanelSchema;
+    const minFontSize = dynamicFontSize.properties?.min;
+
+    expect(minFontSize?.hidden).toBe(false);
+  });
+});
+
+describe('text dynamic layout', () => {
+  const baseArgs = {
+    basePdf: { width: 100, height: 100, padding: [10, 10, 10, 10] },
+    options: { font: getSampleFont() },
+    _cache: new Map<string | number, unknown>(),
+  };
+
+  it('keeps the schema height when text overflow is undefined', async () => {
+    const schema = {
+      ...getTextSchema(),
+      height: 5,
+      width: 20,
+    } as TextSchema;
+
+    const result = await getDynamicLayoutForText('long text '.repeat(20), {
+      ...baseArgs,
+      schema,
+    });
+
+    expect(result.heights).toEqual([5]);
+  });
+
+  it('keeps the schema height when text overflow is visible', async () => {
+    const schema = {
+      ...getTextSchema(),
+      height: 5,
+      width: 20,
+      overflow: 'visible',
+    } as TextSchema;
+
+    const result = await getDynamicLayoutForText('long text '.repeat(20), {
+      ...baseArgs,
+      schema,
+    });
+
+    expect(result.heights).toEqual([5]);
+  });
+
+  it('expands text height when text overflow is expand', async () => {
+    const schema = {
+      ...getTextSchema(),
+      height: 5,
+      width: 20,
+      overflow: 'expand',
+    } as TextSchema;
+
+    const result = await getDynamicLayoutForText('long text '.repeat(20), {
+      ...baseArgs,
+      schema,
+    });
+
+    expect(result.heights.reduce((sum, height) => sum + height, 0)).toBeGreaterThan(5);
+    expect(result.heights.length).toBeGreaterThan(1);
+  });
+
+  it('does not shrink text height when the measured height is smaller', async () => {
+    const schema = {
+      ...getTextSchema(),
+      height: 40,
+      width: 60,
+      overflow: 'expand',
+    } as TextSchema;
+
+    const result = await getDynamicLayoutForText('short', {
+      ...baseArgs,
+      schema,
+    });
+
+    expect(result.heights).toEqual([40]);
+  });
+
+  it('lets overflow expand take priority over dynamic font size', async () => {
+    const schema = {
+      ...getTextSchema(),
+      height: 5,
+      width: 20,
+      overflow: 'expand',
+      dynamicFontSize: { min: 4, max: 20, fit: 'vertical' },
+    } as TextSchema;
+
+    const result = await getDynamicLayoutForText('long text '.repeat(20), {
+      ...baseArgs,
+      schema,
+    });
+
+    expect(result.heights.reduce((sum, height) => sum + height, 0)).toBeGreaterThan(5);
+    expect(
+      result.patchSplitSchema?.({
+        schema,
+        start: 0,
+        end: 1,
+        isSplit: false,
+        chunkHeight: result.heights[0],
+      }),
+    ).toEqual({
+      dynamicFontSize: undefined,
+      __splitRange: { unit: 'textLine', start: 0, end: 1 },
+      __isSplit: false,
+    });
+  });
+
+  it('patches expanded text chunks with line ranges', async () => {
+    const schema = {
+      ...getTextSchema(),
+      height: 5,
+      width: 20,
+      overflow: 'expand',
+    } as TextSchema;
+
+    const result = await getDynamicLayoutForText('long text '.repeat(20), {
+      ...baseArgs,
+      schema,
+    });
+
+    expect(result.heights.length).toBeGreaterThan(2);
+    expect(
+      result.patchSplitSchema?.({
+        schema,
+        start: 1,
+        end: 3,
+        isSplit: true,
+        chunkHeight: result.heights[1] + result.heights[2],
+      }),
+    ).toEqual({
+      dynamicFontSize: undefined,
+      __splitRange: { unit: 'textLine', start: 1, end: 3 },
+      __isSplit: true,
+    });
+  });
+
+  it('keeps text box padding and borders on the visible edges of split chunks', async () => {
+    const schema = {
+      ...getTextSchema(),
+      height: 5,
+      width: 20,
+      overflow: 'expand',
+      borderColor: '#d0d7de',
+      borderWidth: { top: 0.5, right: 0.2, bottom: 0.5, left: 0.2 },
+      padding: { top: 2, right: 3, bottom: 2, left: 3 },
+    } as TextSchema;
+
+    const result = await getDynamicLayoutForText('long text '.repeat(20), {
+      ...baseArgs,
+      schema,
+    });
+
+    expect(result.heights.length).toBeGreaterThan(2);
+    expect(
+      result.patchSplitSchema?.({
+        schema,
+        start: 0,
+        end: 1,
+        isSplit: true,
+        chunkHeight: result.heights[0],
+      }),
+    ).toMatchObject({
+      borderWidth: { top: 0.5, right: 0.2, bottom: 0, left: 0.2 },
+      padding: { top: 2, right: 3, bottom: 0, left: 3 },
+    });
+    expect(
+      result.patchSplitSchema?.({
+        schema,
+        start: result.heights.length - 1,
+        end: result.heights.length,
+        isSplit: true,
+        chunkHeight: result.heights[result.heights.length - 1],
+      }),
+    ).toMatchObject({
+      borderWidth: { top: 0, right: 0.2, bottom: 0.5, left: 0.2 },
+      padding: { top: 0, right: 3, bottom: 2, left: 3 },
+    });
+  });
+
+  it('merges form edits from a split text line range into the full value', async () => {
+    const schema = {
+      ...getTextSchema(),
+      width: 20,
+      overflow: 'expand',
+      __splitRange: { unit: 'textLine', start: 1, end: 3 },
+    } as TextSchema;
+
+    const result = await mergeTextLineRangeValue({
+      value: 'long text '.repeat(8),
+      replacement: 'edited one\r\nedited two\redited three\nedited four',
+      schema,
+      font: getSampleFont(),
+      _cache: new Map<string | number, unknown>(),
+    });
+
+    expect(result).toContain('edited one\nedited two\nedited three\nedited four');
+    expect(result).not.toBe('edited one\nedited two\nedited three\nedited four');
+  });
+
+  it('does not use dynamic font size while text overflow is expand', () => {
+    expect(
+      shouldUseDynamicFontSize({
+        dynamicFontSize: { min: 20, max: 30, fit: 'vertical' },
+        overflow: 'expand',
+      }),
+    ).toBe(false);
+  });
+
+  it('treats overflow expand as visible for custom basePdf dynamic font sizing', () => {
+    expect(
+      shouldUseDynamicFontSize(
+        {
+          type: 'text',
+          dynamicFontSize: { min: 20, max: 30, fit: 'vertical' },
+          overflow: 'expand',
+        },
+        'data:application/pdf;base64,AA==' as BasePdf,
+      ),
+    ).toBe(true);
+  });
+
+  it('expands multiVariableText after substituting variables', async () => {
+    const schema = {
+      ...getTextSchema(),
+      name: 'message',
+      type: 'multiVariableText',
+      height: 5,
+      width: 20,
+      overflow: 'expand',
+      text: 'Hello {name}',
+      variables: ['name'],
+      required: true,
+    } as MultiVariableTextSchema;
+
+    const result = await getDynamicLayoutForMultiVariableText(
+      JSON.stringify({ name: 'long text '.repeat(20) }),
+      {
+        ...baseArgs,
+        schema,
+      },
+    );
+
+    expect(result.heights[0]).toBeGreaterThan(5);
+  });
+
+  it('expands multiVariableText when optional variables are empty strings', async () => {
+    const schema = {
+      ...getTextSchema(),
+      name: 'message',
+      type: 'multiVariableText',
+      height: 5,
+      width: 20,
+      overflow: 'expand',
+      text: 'Title\n{name}\nFooter\nDone',
+      variables: ['name'],
+      required: false,
+    } as MultiVariableTextSchema;
+
+    const result = await getDynamicLayoutForMultiVariableText(JSON.stringify({ name: '' }), {
+      ...baseArgs,
+      schema,
+    });
+
+    expect(result.heights[0]).toBeGreaterThan(5);
+  });
+
+  it('expands read-only multiVariableText as resolved text', async () => {
+    const schema = {
+      ...getTextSchema(),
+      name: 'message',
+      type: 'multiVariableText',
+      readOnly: true,
+      height: 5,
+      width: 20,
+      overflow: 'expand',
+      text: 'Hello {name}',
+      variables: ['name'],
+      required: true,
+    } as MultiVariableTextSchema;
+
+    const result = await getDynamicLayoutForMultiVariableText('Hello long text '.repeat(20), {
+      ...baseArgs,
+      schema,
+    });
+
+    expect(result.heights[0]).toBeGreaterThan(5);
+  });
+});
+
+describe('layoutRichTextLines', () => {
+  const fontKitFont = createMockFont(1000 / 12);
+
+  const createRun = (
+    text: string,
+    options: Partial<ResolvedRichTextRun> = {},
+  ): ResolvedRichTextRun => ({
+    text,
+    fontName: 'Base',
+    fontKitFont,
+    syntheticBold: false,
+    syntheticItalic: false,
+    ...options,
+  });
+
+  it('keeps a word together when style changes inside the word', () => {
+    const lines = layoutRichTextLines({
+      runs: [createRun('x he'), createRun('llo', { bold: true })],
+      fontSize: 12,
+      characterSpacing: 0,
+      boxWidthInPt: 6,
+    });
+
+    expect(lines.map(getRichTextLineText)).toEqual(['x ', 'hello']);
+    expect(lines[1].runs.map((run) => run.text)).toEqual(['he', 'llo']);
+  });
+
+  it('wraps before splitting an oversized token at the end of a line', () => {
+    const lines = layoutRichTextLines({
+      runs: [createRun('abc '), createRun('123456', { code: true })],
+      fontSize: 12,
+      characterSpacing: 0,
+      boxWidthInPt: 7,
+    });
+
+    expect(lines.map(getRichTextLineText)).toEqual(['abc ', '1234', '56']);
+  });
+});
+
+describe('calculateDynamicRichTextFontSize', () => {
+  it('measures inline markdown text with resolved variant fonts', async () => {
+    const baseFont = createMockFont(500);
+    const boldFont = createMockFont(1000);
+    const font = {
+      Base: { data: new Uint8Array(), fallback: true },
+      Bold: { data: new Uint8Array() },
+    } as Font;
+    const cache = new Map<string | number, FontKitFont>([
+      ['getFontKitFont-Base', baseFont],
+      ['getFontKitFont-Bold', boldFont],
+    ]);
+    const schema: TextSchema = {
+      ...getTextSchema(),
+      fontName: 'Base',
+      width: 10,
+      height: 20,
+      characterSpacing: 0,
+      fontSize: 20,
+      textFormat: 'inline-markdown',
+      readOnly: true,
+      fontVariants: { bold: 'Bold' },
+      dynamicFontSize: { min: 4, max: 20, fit: 'horizontal' },
+    };
+
+    const fontSize = await calculateDynamicRichTextFontSize({
+      value: '**abcdef**',
+      schema,
+      font,
+      _cache: cache,
+    });
+
+    expect(widthOfTextAtSize('abcdef', boldFont, fontSize, 0)).toBeLessThanOrEqual(
+      mm2pt(schema.width),
+    );
+    expect(fontSize).toBeLessThan(
+      calculateDynamicFontSize({
+        textSchema: schema,
+        fontKitFont: baseFont,
+        value: 'abcdef',
+      }),
+    );
+  });
+});
+
+describe('getSplitPosition test with mocked font width calculations', () => {
+  /**
+   * To simplify these tests we use a mocked font where each glyph has width 1.
+   * Therefore, setting the boxWidthInPt to 5 should result in a split after 5 characters.
+   */
+  const mockedAdvanceWidth = 1000 / 12;
+  const mockedFont = {
+    unitsPerEm: 1000,
+    layout: (text: string) => ({
+      glyphs: Array.from(text, () => ({ advanceWidth: mockedAdvanceWidth })),
+    }),
+  } as unknown as FontKitFont;
   const mockCalcValues: FontWidthCalcValues = {
     font: mockedFont,
     fontSize: 12,
-    characterSpacing: 1,
+    characterSpacing: 0,
     boxWidthInPt: 5,
   };
 
@@ -154,6 +815,59 @@ describe('getSplittedLines test with real font width calculations', () => {
       const result = getSplittedLines('thiswillnotbecut', fontWidthCalcs);
       expect(result).toEqual(['thiswillnotbecut']);
     });
+  });
+});
+
+describe('getFontKitFont remote font cache', () => {
+  const font: Font = {
+    RemoteSans: {
+      fallback: true,
+      data: 'https://example.com/fonts/remote-sans.ttf',
+    },
+  };
+  const createFontResponse = (init?: ResponseInit) => new Response(new Uint8Array(sansData), init);
+
+  it('shares an in-flight remote font load across concurrent calls', async () => {
+    const fetchMock = vi.fn(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      return createFontResponse();
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const _cache = new Map();
+    const fontKitFonts = await Promise.all(
+      Array.from({ length: 20 }, () => getFontKitFont('RemoteSans', font, _cache)),
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(new Set(fontKitFonts).size).toBe(1);
+
+    const cachedFont = await getFontKitFont('RemoteSans', font, _cache);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(cachedFont).toBe(fontKitFonts[0]);
+  });
+
+  it('clears a failed in-flight remote font load so it can be retried', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(createFontResponse({ status: 500 }))
+      .mockResolvedValueOnce(createFontResponse());
+    vi.stubGlobal('fetch', fetchMock);
+
+    const _cache = new Map();
+    await expect(
+      Promise.all([
+        getFontKitFont('RemoteSans', font, _cache),
+        getFontKitFont('RemoteSans', font, _cache),
+      ]),
+    ).rejects.toThrow('HTTP 500');
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(_cache.size).toBe(0);
+
+    await expect(getFontKitFont('RemoteSans', font, _cache)).resolves.toBeTruthy();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(_cache.size).toBe(1);
   });
 });
 
@@ -277,7 +991,7 @@ describe('calculateDynamicFontSize with Default font', () => {
 describe('calculateDynamicFontSize with Custom font', () => {
   let fontKitFont: FontKitFont;
   beforeAll(async () => {
-    fontKitFont = await getFontKitFont('SauceHanSansJP',  getSampleFont(), new Map());
+    fontKitFont = await getFontKitFont('SauceHanSansJP', getSampleFont(), new Map());
   });
 
 

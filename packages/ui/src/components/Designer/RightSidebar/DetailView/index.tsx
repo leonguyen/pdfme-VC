@@ -1,5 +1,6 @@
 import { useForm } from 'form-render';
-import React, { useRef, useContext, useState, useEffect } from 'react';
+import type { Schema as FormRenderSchema } from 'form-render';
+import React, { useRef, useContext, useEffect, useCallback, useMemo } from 'react';
 import type {
   Dict,
   ChangeSchemaItem,
@@ -8,20 +9,29 @@ import type {
   PropPanelSchema,
   Schema,
 } from '@pdfme/common';
+import { isBlankPdf } from '@pdfme/common';
+import { TEXT_OVERFLOW_EXPAND, TEXT_OVERFLOW_VISIBLE } from '@pdfme/schemas/texts';
 import type { SidebarProps } from '../../../../types.js';
 import { Menu } from 'lucide-react';
 import { I18nContext, PluginsRegistry, OptionsContext } from '../../../../contexts.js';
-import { getSidebarContentHeight, debounce } from '../../../../helper.js';
+import { debounce } from '../../../../helper.js';
+import { DESIGNER_CLASSNAME } from '../../../../constants.js';
 import { theme, Typography, Button, Divider } from 'antd';
 import AlignWidget from './AlignWidget.js';
 import WidgetRenderer from './WidgetRenderer.js';
 import ButtonGroupWidget from './ButtonGroupWidget.js';
+import ColorWidget from './ColorWidget.js';
+import type { ColorWidgetProps } from './ColorWidget.js';
+import { expandSameTypeBulkUpdateChanges } from './schemaChangeHelpers.js';
 import { InternalNamePath, ValidateErrorEntity } from 'rc-field-form/es/interface.js';
+import { SidebarBody, SidebarFrame, SidebarHeader, SIDEBAR_H_PADDING_PX } from '../layout.js';
 
 // Import FormRender as a default import
 import FormRenderComponent from 'form-render';
 
 const { Text } = Typography;
+
+const TEXT_OVERFLOW_EXPAND_SCHEMA_TYPES = new Set(['text', 'multiVariableText']);
 
 type DetailViewProps = Pick<
   SidebarProps,
@@ -29,6 +39,7 @@ type DetailViewProps = Pick<
   | 'schemas'
   | 'schemasList'
   | 'pageSize'
+  | 'basePdf'
   | 'changeSchemas'
   | 'activeElements'
   | 'deselectSchema'
@@ -36,41 +47,83 @@ type DetailViewProps = Pick<
   activeSchema: SchemaForUI;
 };
 
+type WidgetMap = Record<string, (props: PropPanelWidgetProps) => React.JSX.Element>;
+const getElementIds = (elements: HTMLElement[]) => elements.map(({ id }) => id);
+
 const DetailView = (props: DetailViewProps) => {
   const { token } = theme.useToken();
 
-  const { size, schemasList, changeSchemas, deselectSchema, activeSchema } = props;
-  const form = useForm();
+  const { schemasList, changeSchemas, deselectSchema, activeSchema, pageSize, basePdf } = props;
+  const formInstance = useForm();
+  // form-render returns a new wrapper each render; keep one so schema updates do not reset focused fields.
+  const formRef = useRef(formInstance);
+  const form = formRef.current;
 
   const i18n = useContext(I18nContext);
   const pluginsRegistry = useContext(PluginsRegistry);
   const options = useContext(OptionsContext);
 
+  const activeSchemas = useMemo(() => {
+    const ids = new Set(props.activeElements.map((element) => element.id));
+    return props.schemas.filter((schema) => ids.has(schema.id));
+  }, [props.activeElements, props.schemas]);
+
+  const changeSchemasWithSameTypeSelection = useCallback(
+    (changes: ChangeSchemaItem[]) =>
+      changeSchemas(
+        expandSameTypeBulkUpdateChanges({
+          activeSchema,
+          activeSchemas,
+          changes,
+        }),
+      ),
+    [activeSchema, activeSchemas, changeSchemas],
+  );
+
   // Define a type-safe i18n function that accepts string keys
-  const typedI18n = (key: string): string => {
-    // Use a type assertion to handle the union type constraint
-    return typeof i18n === 'function' ? i18n(key as keyof Dict) : key;
-  };
+  const typedI18n = useCallback(
+    (key: string): string => {
+      // Use a type assertion to handle the union type constraint
+      return typeof i18n === 'function' ? i18n(key as keyof Dict) : key;
+    },
+    [i18n],
+  );
 
-  const [widgets, setWidgets] = useState<{
-    [key: string]: (props: PropPanelWidgetProps) => React.JSX.Element;
-  }>({});
-
-  useEffect(() => {
-    const newWidgets: typeof widgets = {
-      AlignWidget: (p) => <AlignWidget {...p} {...props} options={options} />,
+  const widgets = useMemo<WidgetMap>(() => {
+    const newWidgets: WidgetMap = {
+      AlignWidget: (p) => (
+        <AlignWidget
+          {...p}
+          {...props}
+          changeSchemas={changeSchemasWithSameTypeSelection}
+          options={options}
+        />
+      ),
       Divider: () => (
         <Divider style={{ marginTop: token.marginXS, marginBottom: token.marginXS }} />
       ),
-      ButtonGroup: (p) => <ButtonGroupWidget {...p} {...props} options={options} />,
+      ButtonGroup: (p) => (
+        <ButtonGroupWidget
+          {...p}
+          {...props}
+          changeSchemas={changeSchemasWithSameTypeSelection}
+          options={options}
+        />
+      ),
+      // Override form-render's built-in `color` widget
+      color: (p) => <ColorWidget {...(p as unknown as ColorWidgetProps)} />,
     };
     for (const plugin of pluginsRegistry.values()) {
-      const widgets = plugin.propPanel.widgets || {};
-      Object.entries(widgets).forEach(([widgetKey, widgetValue]) => {
+      const pluginWidgets = (plugin.propPanel.widgets ?? {}) as Record<
+        string,
+        (props: PropPanelWidgetProps) => void
+      >;
+      Object.entries(pluginWidgets).forEach(([widgetKey, widgetValue]) => {
         newWidgets[widgetKey] = (p) => (
           <WidgetRenderer
             {...p}
             {...props}
+            changeSchemas={changeSchemasWithSameTypeSelection}
             options={options}
             theme={token}
             i18n={typedI18n}
@@ -79,8 +132,10 @@ const DetailView = (props: DetailViewProps) => {
         );
       });
     }
-    setWidgets(newWidgets);
-  }, [activeSchema, pluginsRegistry, JSON.stringify(options)]);
+    return newWidgets;
+  }, [changeSchemasWithSameTypeSelection, options, pluginsRegistry, props, token, typedI18n]);
+
+  useEffect(() => form.resetFields(), [activeSchema.id, form]);
 
   useEffect(() => {
     // Create a type-safe copy of the schema with editable property
@@ -91,7 +146,12 @@ const DetailView = (props: DetailViewProps) => {
     form.setValues(values);
   }, [activeSchema, form]);
 
-  useEffect(() => form.resetFields(), [activeSchema.id]);
+  useEffect(() => {
+    if (isBlankPdf(basePdf) || !TEXT_OVERFLOW_EXPAND_SCHEMA_TYPES.has(activeSchema.type)) return;
+    if ((activeSchema as Record<string, unknown>).overflow !== TEXT_OVERFLOW_EXPAND) return;
+
+    changeSchemas([{ key: 'overflow', value: TEXT_OVERFLOW_VISIBLE, schemaId: activeSchema.id }]);
+  }, [activeSchema, basePdf, changeSchemas]);
 
   useEffect(() => {
     uniqueSchemaName.current = (value: string): boolean => {
@@ -107,14 +167,42 @@ const DetailView = (props: DetailViewProps) => {
   }, [schemasList, activeSchema]);
 
   // Reference to a function that validates schema name uniqueness
-  const uniqueSchemaName = useRef(
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    (_unused: string): boolean => true,
-  );
+  const uniqueSchemaName = useRef<(value: string) => boolean>(() => true);
 
   // Use proper type for validator function parameter
   const validateUniqueSchemaName = (_: unknown, value: string): boolean =>
     uniqueSchemaName.current(value);
+
+  // Calculate padding values once
+  const [paddingTop, paddingRight, paddingBottom, paddingLeft] = isBlankPdf(basePdf)
+    ? basePdf.padding
+    : [0, 0, 0, 0];
+
+  // Cross-field validation: only checks when both fields are individually valid
+  const validatePosition = (_: unknown, value: number, fieldName: string): boolean => {
+    const formValues = form.getValues() as Record<string, unknown>;
+    const position = formValues.position as { x: number; y: number } | undefined;
+    const width = formValues.width as number | undefined;
+    const height = formValues.height as number | undefined;
+
+    if (!position || width === undefined || height === undefined) return true;
+
+    if (fieldName === 'x') {
+      if (value < paddingLeft || value > pageSize.width - paddingRight) return true;
+      if (width > 0 && value + width > pageSize.width - paddingRight) return false;
+    } else if (fieldName === 'y') {
+      if (value < paddingTop || value > pageSize.height - paddingBottom) return true;
+      if (height > 0 && value + height > pageSize.height - paddingBottom) return false;
+    } else if (fieldName === 'width') {
+      if (position.x < paddingLeft || position.x > pageSize.width - paddingRight) return true;
+      if (value > 0 && position.x + value > pageSize.width - paddingRight) return false;
+    } else if (fieldName === 'height') {
+      if (position.y < paddingTop || position.y > pageSize.height - paddingBottom) return true;
+      if (value > 0 && position.y + value > pageSize.height - paddingBottom) return false;
+    }
+
+    return true;
+  };
 
   // Use explicit type for debounce function that matches the expected signature
   const handleWatch = debounce(function (...args: unknown[]) {
@@ -128,6 +216,8 @@ const DetailView = (props: DetailViewProps) => {
 
     let changes: ChangeSchemaItem[] = [];
     for (const key in formSchema) {
+      // `id` is UI-only and `content` is edited by schema renderers/widgets, not this form watcher.
+      // Other active-schema-only keys are handled by expandSameTypeBulkUpdateChanges.
       if (['id', 'content'].includes(key)) continue;
 
       let value = formSchema[key];
@@ -142,11 +232,27 @@ const DetailView = (props: DetailViewProps) => {
           changes.push({ key: 'readOnly', value: readOnlyValue, schemaId: activeSchema.id });
           if (readOnlyValue) {
             changes.push({ key: 'required', value: false, schemaId: activeSchema.id });
+          } else if (
+            activeSchema.type === 'text' &&
+            (activeSchema as Record<string, unknown>).textFormat === 'inline-markdown'
+          ) {
+            changes.push({ key: 'textFormat', value: 'plain', schemaId: activeSchema.id });
           }
           continue;
         }
 
         changes.push({ key, value, schemaId: activeSchema.id });
+        if (
+          key === 'overflow' &&
+          value === TEXT_OVERFLOW_EXPAND &&
+          ['text', 'multiVariableText'].includes(activeSchema.type)
+        ) {
+          changes.push({
+            key: 'dynamicFontSize',
+            value: undefined,
+            schemaId: activeSchema.id,
+          });
+        }
       }
     }
 
@@ -154,7 +260,7 @@ const DetailView = (props: DetailViewProps) => {
       // Only commit these schema changes if they have passed form validation
       form
         .validateFields()
-        .then(() => changeSchemas(changes))
+        .then(() => changeSchemasWithSameTypeSelection(changes))
         .catch((reason: ValidateErrorEntity) => {
           if (reason.errorFields.length) {
             changes = changes.filter(
@@ -165,7 +271,7 @@ const DetailView = (props: DetailViewProps) => {
             );
           }
           if (changes.length) {
-            changeSchemas(changes);
+            changeSchemasWithSameTypeSelection(changes);
           }
         });
     }
@@ -202,6 +308,10 @@ const DetailView = (props: DetailViewProps) => {
         return result;
       })()
     : emptySchema;
+
+  // Calculate max values considering padding
+  const maxWidth = pageSize.width - paddingLeft - paddingRight;
+  const maxHeight = pageSize.height - paddingTop - paddingBottom;
 
   // Create a type-safe schema object
   const propPanelSchema: PropPanelSchema = {
@@ -247,8 +357,36 @@ const DetailView = (props: DetailViewProps) => {
         type: 'object',
         widget: 'card',
         properties: {
-          x: { title: 'X', type: 'number', widget: 'inputNumber', required: true, span: 8, min: 0 },
-          y: { title: 'Y', type: 'number', widget: 'inputNumber', required: true, span: 8, min: 0 },
+          x: {
+            title: 'X',
+            type: 'number',
+            widget: 'inputNumber',
+            required: true,
+            span: 8,
+            min: paddingLeft,
+            max: pageSize.width - paddingRight,
+            rules: [
+              {
+                validator: (_: unknown, value: number) => validatePosition(_, value, 'x'),
+                message: typedI18n('validation.outOfBounds'),
+              },
+            ],
+          },
+          y: {
+            title: 'Y',
+            type: 'number',
+            widget: 'inputNumber',
+            required: true,
+            span: 8,
+            min: paddingTop,
+            max: pageSize.height - paddingBottom,
+            rules: [
+              {
+                validator: (_: unknown, value: number) => validatePosition(_, value, 'y'),
+                message: typedI18n('validation.outOfBounds'),
+              },
+            ],
+          },
         },
       },
       width: {
@@ -257,7 +395,13 @@ const DetailView = (props: DetailViewProps) => {
         widget: 'inputNumber',
         required: true,
         span: 6,
-        props: { min: 0 },
+        props: { min: 0, max: maxWidth },
+        rules: [
+          {
+            validator: (_: unknown, value: number) => validatePosition(_, value, 'width'),
+            message: typedI18n('validation.outOfBounds'),
+          },
+        ],
       },
       height: {
         title: typedI18n('height'),
@@ -265,7 +409,13 @@ const DetailView = (props: DetailViewProps) => {
         widget: 'inputNumber',
         required: true,
         span: 6,
-        props: { min: 0 },
+        props: { min: 0, max: maxHeight },
+        rules: [
+          {
+            validator: (_: unknown, value: number) => validatePosition(_, value, 'height'),
+            message: typedI18n('validation.outOfBounds'),
+          },
+        ],
       },
       rotate: {
         title: typedI18n('rotate'),
@@ -292,12 +442,13 @@ const DetailView = (props: DetailViewProps) => {
 
   if (typeof activePropPanelSchema === 'function') {
     // Create a new object without the schemasList property
-    const { size, schemas, pageSize, changeSchemas, activeElements, deselectSchema, activeSchema } =
+    const { size, schemas, pageSize, basePdf, activeElements, deselectSchema, activeSchema } =
       props;
     const propPanelProps = {
       size,
       schemas,
       pageSize,
+      basePdf,
       changeSchemas,
       activeElements,
       deselectSchema,
@@ -345,15 +496,20 @@ const DetailView = (props: DetailViewProps) => {
   }
 
   return (
-    <div>
-      <div style={{ height: 40, display: 'flex', alignItems: 'center' }}>
+    <SidebarFrame className={DESIGNER_CLASSNAME + 'detail-view'}>
+      <SidebarHeader>
         <Button
+          className={DESIGNER_CLASSNAME + 'back-button'}
           style={{
             position: 'absolute',
+            left: SIDEBAR_H_PADDING_PX,
             zIndex: 100,
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
+            transform: 'translateY(-50%)',
+            top: '50%',
+            paddingTop: '3px',
           }}
           onClick={deselectSchema}
           icon={<Menu strokeWidth={1.5} size={20} />}
@@ -361,29 +517,26 @@ const DetailView = (props: DetailViewProps) => {
         <Text strong style={{ textAlign: 'center', width: '100%' }}>
           {typedI18n('editField')}
         </Text>
-      </div>
-      <Divider style={{ marginTop: token.marginXS, marginBottom: token.marginXS }} />
-      <div
-        style={{
-          height: getSidebarContentHeight(size.height),
-          overflowY: 'auto',
-          overflowX: 'hidden',
-        }}
-      >
+      </SidebarHeader>
+      <SidebarBody>
         <FormRenderComponent
           form={form}
-          schema={propPanelSchema}
+          schema={propPanelSchema as unknown as FormRenderSchema}
           widgets={widgets}
           watch={{ '#': handleWatch }}
           locale="en-US"
         />
-      </div>
-    </div>
+      </SidebarBody>
+    </SidebarFrame>
   );
 };
 
 const propsAreUnchanged = (prevProps: DetailViewProps, nextProps: DetailViewProps) => {
-  return JSON.stringify(prevProps.activeSchema) == JSON.stringify(nextProps.activeSchema);
+  return (
+    JSON.stringify(prevProps.activeSchema) === JSON.stringify(nextProps.activeSchema) &&
+    JSON.stringify(getElementIds(prevProps.activeElements)) ===
+      JSON.stringify(getElementIds(nextProps.activeElements))
+  );
 };
 
 export default React.memo(DetailView, propsAreUnchanged);

@@ -22,9 +22,9 @@ import {
 } from '@pdfme/common';
 import { PluginsRegistry } from '../../../contexts.js';
 import { X } from 'lucide-react';
-import { RULER_HEIGHT, RIGHT_SIDEBAR_WIDTH } from '../../../constants.js';
+import { RULER_HEIGHT, RIGHT_SIDEBAR_WIDTH, DESIGNER_CLASSNAME } from '../../../constants.js';
 import { usePrevious } from '../../../hooks.js';
-import { uuid, round, flatten } from '../../../helper.js';
+import { round, flatten, uuid } from '../../../helper.js';
 import Paper from '../../Paper.js';
 import Renderer from '../../Renderer.js';
 import Selecto from './Selecto.js';
@@ -52,6 +52,7 @@ const DeleteButton = ({ activeElements: aes }: { activeElements: HTMLElement[] }
   return (
     <Button
       id={DELETE_BTN_ID}
+      className={DESIGNER_CLASSNAME + 'delete-button'}
       style={{
         position: 'absolute',
         zIndex: 1,
@@ -89,6 +90,7 @@ interface Props {
   pageCursor: number;
   schemasList: SchemaForUI[][];
   scale: number;
+  renderScale: number;
   backgrounds: string[];
   pageSizes: Size[];
   size: Size;
@@ -105,6 +107,7 @@ const Canvas = (props: Props, ref: Ref<HTMLDivElement>) => {
     basePdf,
     pageCursor,
     scale,
+    renderScale,
     backgrounds,
     pageSizes,
     size,
@@ -166,6 +169,10 @@ const Canvas = (props: Props, ref: Ref<HTMLDivElement>) => {
       moveable.current?.updateRect();
     }
   }, [pageCursor, schemasList, prevSchemas]);
+
+  useEffect(() => {
+    moveable.current?.updateRect();
+  }, [renderScale]);
 
   const onDrag = ({ target, top, left }: OnDrag) => {
     const { width: _width, height: _height } = target.style;
@@ -350,6 +357,7 @@ const Canvas = (props: Props, ref: Ref<HTMLDivElement>) => {
 
   return (
     <div
+      className={DESIGNER_CLASSNAME + 'canvas'}
       style={{
         position: 'relative',
         overflow: 'auto',
@@ -429,7 +437,7 @@ const Canvas = (props: Props, ref: Ref<HTMLDivElement>) => {
               input={Object.fromEntries(
                 schemasList.flat().map(({ name, content = '' }) => [name, content]),
               )}
-              scale={scale}
+              scale={renderScale}
               totalPages={schemasList.length}
               currentPage={index + 1}
             />
@@ -523,7 +531,7 @@ const Canvas = (props: Props, ref: Ref<HTMLDivElement>) => {
                   ? 'transparent'
                   : token.colorPrimary
               }`}
-              scale={scale}
+              scale={renderScale}
             />
           );
         }}

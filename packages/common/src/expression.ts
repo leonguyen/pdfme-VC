@@ -3,15 +3,19 @@ import type { Node as AcornNode, Identifier, Property } from 'estree';
 import type { SchemaPageArray } from './types.js';
 
 const expressionCache = new Map<string, (context: Record<string, unknown>) => unknown>();
-const parseDataCache = new Map<string, Record<string, unknown>>();
 
+/**
+ * Parse each string value in `data` as JSON, falling back to the original
+ * string on failure. Previously memoized via a module-level `parseDataCache`
+ * Map keyed by `JSON.stringify(data)`, but that was a severe memory leak:
+ * - Cache was never evicted.
+ * - Key was a multi-MB string whenever `data` included schema.content with
+ *   base64 (e.g. image schemas) or inputs containing base64 values. Every
+ *   unique inputs state pinned its own multi-MB key for the app lifetime.
+ * Parsing is O(fields) and cheap; removing the cache is strictly a win.
+ */
 const parseData = (data: Record<string, unknown>): Record<string, unknown> => {
-  const key = JSON.stringify(data);
-  if (parseDataCache.has(key)) {
-    return parseDataCache.get(key)!;
-  }
-
-  const parsed = Object.fromEntries(
+  return Object.fromEntries(
     Object.entries(data).map(([key, value]) => {
       if (typeof value === 'string') {
         try {
@@ -24,9 +28,6 @@ const parseData = (data: Record<string, unknown>): Record<string, unknown> => {
       return [key, value];
     }),
   );
-
-  parseDataCache.set(key, parsed);
-  return parsed;
 };
 
 const padZero = (num: number): string => String(num).padStart(2, '0');
@@ -45,9 +46,9 @@ const safeAssign = (
   if (target == null) {
     throw new TypeError('Cannot convert undefined or null to object');
   }
-  
+
   const to = { ...target };
-  
+
   for (const source of sources) {
     if (source != null) {
       for (const key in source) {
@@ -62,7 +63,7 @@ const safeAssign = (
       }
     }
   }
-  
+
   return to;
 };
 
@@ -134,7 +135,11 @@ const validateAST = (node: AcornNode): void => {
           throw new Error('Access to prohibited property');
         }
         // Block prototype pollution methods
-        if (['__defineGetter__', '__defineSetter__', '__lookupGetter__', '__lookupSetter__'].includes(propName)) {
+        if (
+          ['__defineGetter__', '__defineSetter__', '__lookupGetter__', '__lookupSetter__'].includes(
+            propName,
+          )
+        ) {
           throw new Error(`Access to prohibited method: ${propName}`);
         }
         const prohibitedMethods = ['toLocaleString', 'valueOf'];
@@ -283,7 +288,12 @@ const evaluateAST = (node: AcornNode, context: Record<string, unknown>): unknown
           throw new Error('Access to prohibited property');
         }
         // Block prototype pollution methods
-        if (typeof prop === 'string' && ['__defineGetter__', '__defineSetter__', '__lookupGetter__', '__lookupSetter__'].includes(prop)) {
+        if (
+          typeof prop === 'string' &&
+          ['__defineGetter__', '__defineSetter__', '__lookupGetter__', '__lookupSetter__'].includes(
+            prop,
+          )
+        ) {
           throw new Error(`Access to prohibited method: ${prop}`);
         }
         return obj[prop];

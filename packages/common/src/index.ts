@@ -27,6 +27,8 @@ import type {
   SchemaForUI,
   Font,
   ColorType,
+  DynamicLayoutRange,
+  DynamicLayoutSplitRange,
   BasePdf,
   BlankPdf,
   CustomPdf,
@@ -40,7 +42,14 @@ import type {
   UIProps,
   PreviewProps,
   DesignerProps,
+  DynamicLayoutArgs,
+  DynamicLayoutCallbackResult,
+  DynamicLayoutPatchArgs,
+  DynamicLayoutResult,
+  GetDynamicLayout,
 } from './types.js';
+import type { PdfLinkAnnotationRect } from './helper.js';
+import type { PageOrientation, PageSize, PageSizePreset } from './pageSize.js';
 import {
   cloneDeep,
   getFallbackFontName,
@@ -62,8 +71,19 @@ import {
   isHexValid,
   getInputFromTemplate,
   isBlankPdf,
+  isUrlSafeToFetch,
+  getInternalLinkTarget,
+  normalizeInternalLinkHref,
+  normalizeLinkHref,
+  normalizeSafeLinkUri,
+  registerInternalLinkAnchor,
+  registerInternalLinkAnnotation,
+  resetInternalLinkAnnotations,
+  applyInternalLinkAnnotations,
 } from './helper.js';
+import { PAGE_SIZE_PRESETS, detectPaperSize, resolvePageSize } from './pageSize.js';
 import { getDynamicTemplate } from './dynamicTemplate.js';
+import { createDynamicLayoutSplitRange, getDynamicLayoutSplitRange } from './splitRange.js';
 import { replacePlaceholders } from './expression.js';
 import { pluginRegistry } from './pluginRegistry.js';
 
@@ -100,6 +120,20 @@ export {
   checkDesignerProps,
   checkGenerateProps,
   pluginRegistry,
+  isUrlSafeToFetch,
+  getInternalLinkTarget,
+  normalizeInternalLinkHref,
+  normalizeLinkHref,
+  normalizeSafeLinkUri,
+  registerInternalLinkAnchor,
+  registerInternalLinkAnnotation,
+  resetInternalLinkAnnotations,
+  applyInternalLinkAnnotations,
+  PAGE_SIZE_PRESETS,
+  detectPaperSize,
+  resolvePageSize,
+  createDynamicLayoutSplitRange,
+  getDynamicLayoutSplitRange,
 };
 
 export type {
@@ -110,6 +144,8 @@ export type {
   SchemaForUI,
   Font,
   ColorType,
+  DynamicLayoutRange,
+  DynamicLayoutSplitRange,
   BasePdf,
   BlankPdf,
   CustomPdf,
@@ -133,4 +169,13 @@ export type {
   PDFRenderProps,
   UIRenderProps,
   Mode,
+  DynamicLayoutArgs,
+  DynamicLayoutCallbackResult,
+  DynamicLayoutPatchArgs,
+  DynamicLayoutResult,
+  GetDynamicLayout,
+  PdfLinkAnnotationRect,
+  PageOrientation,
+  PageSize,
+  PageSizePreset,
 };

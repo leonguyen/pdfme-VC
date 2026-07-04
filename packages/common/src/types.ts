@@ -1,12 +1,11 @@
 import { z } from 'zod';
 import type { PDFPage, PDFDocument } from '@pdfme/pdf-lib';
-import type { ThemeConfig, GlobalToken } from 'antd';
-import type { WidgetProps as _PropPanelWidgetProps, Schema as _PropPanelSchema } from 'form-render';
 import {
   Lang,
   Dict,
   Mode,
   Size,
+  DynamicLayoutSplitRange,
   Schema,
   Font,
   SchemaForUI,
@@ -26,13 +25,60 @@ import {
   SchemaPageArray,
 } from './schema.js';
 
-export type PropPanelSchema = _PropPanelSchema;
+export interface UIOptionsThemeToken {
+  colorPrimary?: string;
+  colorPrimaryBg?: string;
+  colorWhite?: string;
+  [key: string]: unknown;
+}
+
+export interface UIOptionsTheme {
+  token?: UIOptionsThemeToken;
+  components?: Record<string, Record<string, unknown>>;
+  [key: string]: unknown;
+}
+
+export interface PropPanelRule {
+  validator?: (...args: any[]) => unknown;
+  message?: string;
+  pattern?: RegExp | string;
+  [key: string]: unknown;
+}
+
+export interface PropPanelSchema {
+  title?: string;
+  type?: string;
+  widget?: string;
+  default?: unknown;
+  placeholder?: string;
+  format?: string;
+  required?: boolean;
+  hidden?: boolean | string;
+  disabled?: boolean;
+  bind?: string | false | string[];
+  span?: number;
+  column?: number;
+  min?: number;
+  max?: number;
+  props?: Record<string, unknown>;
+  rules?: PropPanelRule[];
+  properties?: Record<string, PropPanelSchema>;
+  items?: PropPanelSchema | PropPanelSchema[];
+  [key: string]: unknown;
+}
+
 export type ChangeSchemaItem = {
   key: string;
   value: unknown;
   schemaId: string;
 };
 export type ChangeSchemas = (objs: ChangeSchemaItem[]) => void;
+
+export type UITheme = {
+  colorPrimary: string;
+  colorPrimaryBg: string;
+  colorWhite: string;
+};
 
 /**
  * Properties used for PDF rendering.
@@ -72,7 +118,7 @@ export interface PDFRenderProps<T extends Schema> {
  * @property {(arg: { key: string; value: unknown } | { key: string; value: unknown }[]) => void} [onChange] - Used to change the value and schema properties. Only applicable when the mode is 'form' or 'designer'.
  * @property {HTMLDivElement} rootElement - The root HTMLDivElement for the UI.
  * @property {UIOptions} options - Options object passed from the Viewer, Form, or Designer.
- * @property {ThemeConfig} theme - An object that merges the 'theme' passed as an options with the default theme.
+ * @property {UITheme} theme - A merged token object used for UI rendering.
  * @property {(key: keyof Dict | string) => string} i18n - An object merged based on the options 'lang' and 'labels'.
  * @property {number} scale - The scale of the UI.
  * @property {Map<string | number, unknown>} _cache - Cache shared only during the execution of the render function (useful for caching images, etc. if needed).
@@ -88,7 +134,7 @@ export type UIRenderProps<T extends Schema> = {
   onChange?: (arg: { key: string; value: unknown } | { key: string; value: unknown }[]) => void;
   rootElement: HTMLDivElement;
   options: UIOptions;
-  theme: GlobalToken;
+  theme: UITheme;
   i18n: (key: string) => string;
   scale: number;
   _cache: Map<string | number, unknown>;
@@ -102,9 +148,10 @@ export type UIRenderProps<T extends Schema> = {
  * @property {HTMLElement[]} activeElements - Array of currently active HTML elements in the UI.
  * @property {ChangeSchemas} changeSchemas - Function to change multiple schemas simultaneously.
  * @property {SchemaForUI[]} schemas - Array of schemas for UI rendering.
+ * @property {BasePdf} basePdf - The base PDF used by the current template.
  * @property {Size} pageSize - The size of the page being edited.
  * @property {UIOptions} options - UI options for the property panel.
- * @property {GlobalToken} theme - The theme configuration used in the UI.
+ * @property {UITheme} theme - The theme token used in the UI.
  * @property {(key: keyof Dict | string) => string} i18n - Internationalization dictionary for UI labels and texts.
  */
 type PropPanelProps = {
@@ -113,12 +160,21 @@ type PropPanelProps = {
   activeElements: HTMLElement[];
   changeSchemas: ChangeSchemas;
   schemas: SchemaForUI[];
+  basePdf?: BasePdf;
   options: UIOptions;
-  theme: GlobalToken;
+  theme: UITheme;
   i18n: (key: string) => string;
 };
 
-export type PropPanelWidgetProps = _PropPanelWidgetProps & PropPanelProps;
+type PropPanelWidgetRuntimeProps = {
+  schema?: PropPanelSchema;
+  value?: unknown;
+  onChange?: (...args: any[]) => unknown;
+  error?: unknown;
+  [key: string]: unknown;
+};
+
+export type PropPanelWidgetProps = PropPanelWidgetRuntimeProps & PropPanelProps;
 
 /**
  * Used for customizing the property panel.
@@ -147,16 +203,15 @@ export interface PropPanel<T extends Schema> {
  * @property {string} [icon] Icon SVG for the plugin.
  * @property {boolean} [uninterruptedEditMode] When editing in the UI, should the field avoid re-rendering while in edit mode?
  */
-export type Plugin<T = Schema> = {
-  pdf: (arg: PDFRenderProps<T & Schema>) => Promise<void> | void;
-  ui: (arg: UIRenderProps<T & Schema>) => Promise<void> | void;
+export interface Plugin<T extends Schema = Schema> {
+  pdf(arg: PDFRenderProps<T & Schema>): Promise<void> | void;
+  ui(arg: UIRenderProps<T & Schema>): Promise<void> | void;
   propPanel: PropPanel<T & Schema>;
   icon?: string;
   uninterruptedEditMode?: boolean;
-};
+}
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export type Plugins = { [key: string]: Plugin<any> };
+export type Plugins = { [key: string]: Plugin };
 
 export interface PluginRegistry {
   plugins: { [key: string]: Plugin };
@@ -171,6 +226,8 @@ export type Lang = z.infer<typeof Lang>;
 export type Dict = z.infer<typeof Dict>;
 export type Mode = z.infer<typeof Mode>;
 export type Size = z.infer<typeof Size>;
+export type DynamicLayoutSplitRange = z.infer<typeof DynamicLayoutSplitRange>;
+export type DynamicLayoutRange = Omit<DynamicLayoutSplitRange, 'unit'>;
 export type Schema = z.infer<typeof Schema>;
 export type SchemaForUI = z.infer<typeof SchemaForUI>;
 
@@ -189,10 +246,38 @@ export type CustomPdf = z.infer<typeof CustomPdf>;
 export type Template = z.infer<typeof Template>;
 export type CommonOptions = z.infer<typeof CommonOptions>;
 export type GeneratorOptions = z.infer<typeof GeneratorOptions>;
-export type GenerateProps = z.infer<typeof GenerateProps> & { plugins?: Plugins };
-export type UIOptions = z.infer<typeof UIOptions> & { theme?: ThemeConfig };
-export type UIProps = z.infer<typeof UIProps> & { plugins?: Plugins };
-export type PreviewProps = z.infer<typeof PreviewProps> & { plugins?: Plugins };
-export type DesignerProps = z.infer<typeof DesignerProps> & { plugins?: Plugins };
+export type GenerateProps = Omit<z.infer<typeof GenerateProps>, 'plugins'> & { plugins?: Plugins };
+export type UIOptions = z.infer<typeof UIOptions> & { theme?: UIOptionsTheme };
+export type UIProps = Omit<z.infer<typeof UIProps>, 'plugins'> & { plugins?: Plugins };
+export type PreviewProps = Omit<z.infer<typeof PreviewProps>, 'plugins'> & { plugins?: Plugins };
+export type DesignerProps = Omit<z.infer<typeof DesignerProps>, 'plugins'> & { plugins?: Plugins };
 export type SchemaPageArray = z.infer<typeof SchemaPageArray>;
 export type LegacySchemaPageArray = z.infer<typeof LegacySchemaPageArray>;
+
+export type DynamicLayoutPatchArgs = {
+  schema: Schema;
+  start: number;
+  end: number;
+  isSplit: boolean;
+  chunkHeight: number;
+};
+
+export type DynamicLayoutResult = {
+  heights: number[];
+  avoidFirstUnitOnly?: boolean;
+  patchSplitSchema?: (args: DynamicLayoutPatchArgs) => Partial<Schema>;
+};
+
+export type DynamicLayoutCallbackResult = DynamicLayoutResult | number[];
+
+export type DynamicLayoutArgs = {
+  schema: Schema;
+  basePdf: BasePdf;
+  options: CommonOptions;
+  _cache: Map<string | number, unknown>;
+};
+
+export type GetDynamicLayout = (
+  value: string,
+  args: DynamicLayoutArgs,
+) => Promise<DynamicLayoutCallbackResult>;

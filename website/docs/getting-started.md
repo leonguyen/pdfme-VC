@@ -29,6 +29,8 @@ The packages for using PDF designer, forms and viewers can be installed with the
 npm i @pdfme/ui @pdfme/common
 ```
 
+`@pdfme/ui` ships as a standalone bundle, so you do not need to install `react` or `react-dom` separately just to use Designer, Form, or Viewer.
+
 \*You must install `@pdfme/common` regardless of which package you use.
 
 The following type, function and classes are available in pdfme.
@@ -75,16 +77,16 @@ The following image is a good illustration of a template.
 - **basePdf**: PDF data for the fixed part of the PDF to be generated.
 - **schemas**: Definition data for the variable part of the PDF to be generated.
 
-The **basePdf** property accepts PDF data as a `string` (base64 encoded), an `ArrayBuffer`, or a `Uint8Array`. You can import a blank A4 PDF using `BLANK_PDF` to see how it works. Alternatively, you can define an empty PDF as shown below. When using schemas—such as tables that require page breaks—ensure you specify the PDF in the following format:
+The **basePdf** property accepts PDF data as a `string` (base64 encoded), an `ArrayBuffer`, or a `Uint8Array`. You can import a blank A4 PDF using `BLANK_PDF` to see how it works. Alternatively, you can define an empty PDF as shown below. When using schemas that require dynamic layout or page breaks, such as Text with `overflow: "expand"`, List, or Table, ensure you specify the PDF in the following format:
 
 ```json
 basePdf: { "width": 210, "height": 297, "padding": [10, 10, 10, 10] }
 ```
 
 
-**schemas** can only utilize text by default, but you can load images and various barcodes like QR codes as plugins from the `@pdfme/schemas` package.  
-Additionally, you can create your own schemas, allowing you to render types other than the ones mentioned above.  
-Check detail about [Custom Schemas](/docs/custom-schemas).
+**schemas** can only utilize text by default. The default plugin registry used by `generate`, `Designer`, `Form`, and `Viewer` intentionally includes only the `text` schema.  
+For images, signatures, tables, barcodes such as QR codes, or any other schema type, import those plugins explicitly from the `@pdfme/schemas` package and pass them through the `plugins` option.  
+Additionally, you can create your own schemas, allowing you to render types other than the ones mentioned above. Check detail about [Custom Schemas](/docs/custom-schemas) and the [v6 migration guide](/docs/migration-v6#text-only-default-plugin-registry) if you are upgrading existing code.
 
 Let's take a look at some specific data.  
 (If you are using TypeScript, you can import the Template type.)
@@ -124,7 +126,7 @@ const template: Template = {
 };
 ```
 
-You can create a template from [Template Design page](/template-design?ui=designer&template=a4-blank). Or, if you want to integrate the template creation feature into your application, check out the [Designer section](/docs/getting-started#designer).
+You can create a template from the [playground Designer](https://playground.pdfme.com/designer?template=a4-blank). Or, if you want to integrate the template creation feature into your application, check out the [Designer section](/docs/getting-started#designer).
 
 ### Using Plugins
 
@@ -245,7 +247,7 @@ The UI is composed of the [Designer](/docs/getting-started#designer), [Form](/do
 
 The Designer allows you to edit the Template schemas, making it easy for anyone to create Template json objects.
 
-You can design your own template from [Template Design page](/template-design?ui=designer&template=a4-blank), or you can integrate the designer into your application.
+You can design your own template from the [playground Designer](https://playground.pdfme.com/designer?template=a4-blank), or you can integrate the designer into your application.
 
 Let's integrate the designer using the template created above as the default template.
 
@@ -287,7 +289,7 @@ You can use templates to create forms and PDF viewers.
 
 The Form creates a UI for the user to enter schemas based on the template.
 
-You can try out the form that uses the invoice template from [here](/template-design?ui=form-viewer&template=invoice).
+You can try out the form that uses the invoice template in the [playground Form/Viewer](https://playground.pdfme.com/form-viewer?template=invoice).
 
 ```ts
 import type { Template } from '@pdfme/common';

@@ -4,7 +4,7 @@ import { hex2PrintingColor, convertForPdfLayoutProps, createSvgStr } from '../ut
 import { toRadians } from '@pdfme/pdf-lib';
 import { Circle, Square } from 'lucide';
 
-interface ShapeSchema extends Schema {
+export interface ShapeSchema extends Schema {
   type: 'ellipse' | 'rectangle';
   borderWidth: number;
   borderColor: string;
@@ -139,13 +139,13 @@ const getPropPanelSchema = (type: 'rectangle' | 'ellipse') => ({
   },
 });
 
-export const rectangle = {
+export const rectangle: Plugin<ShapeSchema> = {
   ...shape,
   propPanel: getPropPanelSchema('rectangle'),
   icon: createSvgStr(Square),
 };
 
-export const ellipse = {
+export const ellipse: Plugin<ShapeSchema> = {
   ...shape,
   propPanel: getPropPanelSchema('ellipse'),
   icon: createSvgStr(Circle),

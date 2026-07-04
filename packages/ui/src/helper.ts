@@ -13,7 +13,7 @@ import {
   PluginRegistry,
 } from '@pdfme/common';
 import { pdf2size } from '@pdfme/converter';
-import { DEFAULT_MAX_ZOOM, RULER_HEIGHT } from './constants.js';
+import { DEFAULT_MAX_ZOOM, PAGE_GAP, RULER_HEIGHT } from './constants.js';
 import { OptionsContext } from './contexts.js';
 
 // Define a type for the hotkeys function with additional properties
@@ -248,13 +248,19 @@ export const arrayBufferToBase64 = (arrayBuffer: ArrayBuffer): string => {
   // Detect the MIME type
   const mimeType = detectMimeType(arrayBuffer);
 
-  // Convert ArrayBuffer to raw Base64
+  // Convert ArrayBuffer to raw Base64. Convert in chunks instead of byte by
+  // byte: per-byte string concatenation generates a huge number of
+  // intermediate strings, which can exhaust memory on mobile devices when
+  // encoding multi-megabyte page background images.
   const bytes = new Uint8Array(arrayBuffer);
-  let binary = '';
-  for (let i = 0; i < bytes.length; i++) {
-    binary += String.fromCharCode(bytes[i]);
+  const chunkSize = 0x8000;
+  const chunks: string[] = [];
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    chunks.push(
+      String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize) as unknown as number[]),
+    );
   }
-  const base64String = btoa(binary);
+  const base64String = btoa(chunks.join(''));
 
   // Optionally prepend a data: URL if a known MIME type is found;
   // otherwise just return the raw Base64.
@@ -301,20 +307,18 @@ export const template2SchemasList = async (_template: Template) => {
 
   return (
     ssl < psl
-      ? schemasForUI.concat(new Array(psl - ssl).fill(cloneDeep([])))
+      ? schemasForUI.concat(Array.from({ length: psl - ssl }, () => cloneDeep([])))
       : schemasForUI.slice(0, pageSizes.length)
   ).map((schema, i) => {
     Object.values(schema).forEach((value) => {
       const { width, height } = pageSizes[i];
       const xEdge = value.position.x + value.width;
       const yEdge = value.position.y + value.height;
-      if (width < xEdge) {
-        const diff = xEdge - width;
-        value.position.x += diff;
+      if (xEdge > width) {
+        value.position.x = Math.max(0, width - value.width);
       }
-      if (height < yEdge) {
-        const diff = yEdge - height;
-        value.position.y += diff;
+      if (yEdge > height) {
+        value.position.y = Math.max(0, height - value.height);
       }
     });
 
@@ -422,8 +426,99 @@ export const getPagesScrollTopByIndex = (pageSizes: Size[], index: number, scale
     .reduce((acc, cur) => acc + (cur.height * ZOOM + RULER_HEIGHT * scale) * scale, 0);
 };
 
-export const getSidebarContentHeight = (sidebarHeight: number) =>
-  sidebarHeight - RULER_HEIGHT - RULER_HEIGHT / 2 - 30;
+export type ZoomMode = 'manual' | 'fit-width' | 'fit-height';
+
+export type ZoomAnchor = {
+  pageIndex: number;
+  localX: number;
+  localY: number;
+  clientX: number;
+  clientY: number;
+};
+
+export const MIN_ZOOM = 0.25;
+
+const FIT_GUTTER = PAGE_GAP * 4;
+
+export const clampZoomLevel = (zoomLevel: number, maxZoom: number, minZoom: number = MIN_ZOOM) =>
+  Math.min(Math.max(zoomLevel, minZoom), maxZoom);
+
+export const getFitZoomLevel = ({
+  mode,
+  pageSize,
+  container,
+  baseScale,
+  maxZoom,
+  hasRulers = false,
+}: {
+  mode: Exclude<ZoomMode, 'manual'>;
+  pageSize: Size | undefined;
+  container: HTMLElement | null;
+  baseScale: number;
+  maxZoom: number;
+  hasRulers?: boolean;
+}) => {
+  if (baseScale <= 0) return 1;
+  if (mode === 'fit-height') return clampZoomLevel(1, maxZoom);
+  if (!pageSize || !container) return 1;
+
+  const rulerSize = hasRulers ? RULER_HEIGHT : 0;
+  const availableWidth = Math.max(1, container.clientWidth - rulerSize - FIT_GUTTER);
+  const paperWidth = pageSize.width * ZOOM;
+  const fitScale = availableWidth / paperWidth;
+
+  return clampZoomLevel(fitScale / baseScale, maxZoom);
+};
+
+export const getZoomAnchor = ({
+  pageIndex,
+  paper,
+  clientX,
+  clientY,
+  scale,
+}: {
+  pageIndex: number;
+  paper: HTMLElement | undefined;
+  clientX: number;
+  clientY: number;
+  scale: number;
+}): ZoomAnchor | null => {
+  if (!paper || scale <= 0) return null;
+
+  const rect = paper.getBoundingClientRect();
+  return {
+    pageIndex,
+    localX: (clientX - rect.left) / scale,
+    localY: (clientY - rect.top) / scale,
+    clientX,
+    clientY,
+  };
+};
+
+export const restoreZoomAnchor = ({
+  container,
+  paper,
+  anchor,
+  scale,
+}: {
+  container: HTMLElement | null;
+  paper: HTMLElement | undefined;
+  anchor: ZoomAnchor | null;
+  scale: number;
+}) => {
+  if (!container || !paper || !anchor || scale <= 0) return;
+
+  const rect = paper.getBoundingClientRect();
+  const nextClientX = rect.left + anchor.localX * scale;
+  const nextClientY = rect.top + anchor.localY * scale;
+
+  if (Number.isFinite(nextClientX)) {
+    container.scrollLeft += nextClientX - anchor.clientX;
+  }
+  if (Number.isFinite(nextClientY)) {
+    container.scrollTop += nextClientY - anchor.clientY;
+  }
+};
 
 const handlePositionSizeChange = (
   schema: SchemaForUI,
@@ -509,6 +604,30 @@ export const changeSchemas = (args: {
     return acc;
   }, cloneDeep(schemas));
   commitSchemas(newSchemas);
+};
+
+export const getDynamicHeightReflowChanges = (args: {
+  schemas: SchemaForUI[];
+  schema: SchemaForUI;
+  height: unknown;
+}): { key: string; value: unknown; schemaId: string }[] => {
+  const { schemas, schema, height } = args;
+  if (schema.type !== 'list') return [];
+
+  const nextHeight = Number(height);
+  if (!Number.isFinite(nextHeight)) return [];
+
+  const delta = nextHeight - schema.height;
+  if (delta === 0) return [];
+
+  const baseBottom = schema.position.y + schema.height;
+  return schemas
+    .filter((s) => s.id !== schema.id && s.position.y >= baseBottom)
+    .map((s) => ({
+      key: 'position.y',
+      value: round(s.position.y + delta, 2),
+      schemaId: s.id,
+    }));
 };
 
 export const useMaxZoom = () => {

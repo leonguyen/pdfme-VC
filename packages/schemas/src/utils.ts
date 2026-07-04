@@ -3,6 +3,9 @@ import { cmyk, degrees, degreesToRadians, rgb, Color } from '@pdfme/pdf-lib';
 import { Schema, mm2pt, Mode, isHexValid, ColorType } from '@pdfme/common';
 import { IconNode } from 'lucide';
 import { getDynamicHeightsForTable as _getDynamicHeightsForTable } from './tables/dynamicTemplate.js';
+export { measureTextHeight } from './text/measure.js';
+export { escapeInlineMarkdown } from './text/inlineMarkdown.js';
+export { getVariableNames, visitVariables } from './multiVariableText/variables.js';
 export const convertForPdfLayoutProps = ({
   schema,
   pageHeight,
@@ -136,9 +139,9 @@ const hex2CmykColor = (hexString: string | undefined) => {
 
     // Calculate the CMYK values
     const k = 1 - Math.max(r, g, b);
-    const c = r === 0 ? 0 : (1 - r - k) / (1 - k);
-    const m = g === 0 ? 0 : (1 - g - k) / (1 - k);
-    const y = b === 0 ? 0 : (1 - b - k) / (1 - k);
+    const c = k === 1 ? 0 : (1 - r - k) / (1 - k);
+    const m = k === 1 ? 0 : (1 - g - k) / (1 - k);
+    const y = k === 1 ? 0 : (1 - b - k) / (1 - k);
 
     return cmyk(c, m, y, k);
   }
@@ -213,9 +216,90 @@ export const createSvgStr = (icon: IconNode, attrs?: Record<string, string>): st
   // In lucide 0.475.0, the icon is an array of elements, not a single SVG element
   // We need to create an SVG wrapper and add the elements as children
 
+  const safeTagNames = new Set([
+    'svg',
+    'circle',
+    'ellipse',
+    'g',
+    'line',
+    'path',
+    'polygon',
+    'polyline',
+    'rect',
+  ]);
+  const safeAttributeNames = new Set([
+    'aria-hidden',
+    'aria-label',
+    'class',
+    'clip-rule',
+    'cx',
+    'cy',
+    'd',
+    'fill',
+    'fill-opacity',
+    'fill-rule',
+    'focusable',
+    'height',
+    'id',
+    'opacity',
+    'points',
+    'preserveAspectRatio',
+    'r',
+    'role',
+    'rx',
+    'ry',
+    'stroke',
+    'stroke-dasharray',
+    'stroke-dashoffset',
+    'stroke-linecap',
+    'stroke-linejoin',
+    'stroke-miterlimit',
+    'stroke-opacity',
+    'stroke-width',
+    'transform',
+    'vector-effect',
+    'viewBox',
+    'width',
+    'x',
+    'x1',
+    'x2',
+    'xmlns',
+    'xmlns:xlink',
+    'y',
+    'y1',
+    'y2',
+  ]);
+  const escapeHtmlAttribute = (value: string): string =>
+    value
+      .replaceAll('&', '&amp;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;');
+  const escapeHtmlText = (value: string): string =>
+    value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+  const toSafeAttributeString = (attributes: Record<string, string>): string =>
+    Object.entries(attributes)
+      .filter(
+        ([key, value]) =>
+          safeAttributeNames.has(key) &&
+          value !== undefined &&
+          value !== null &&
+          !key.toLowerCase().startsWith('on'),
+      )
+      .map(([key, value]) => `${key}="${escapeHtmlAttribute(String(value))}"`)
+      .join(' ');
+  const toSafeTagName = (tag: unknown): string => {
+    const tagName = String(tag);
+    if (!safeTagNames.has(tagName)) {
+      throw new Error(`Invalid SVG tag name: ${tagName}`);
+    }
+    return tagName;
+  };
+
   // Handle non-array input
   if (!Array.isArray(icon)) {
-    return String(icon);
+    return escapeHtmlText(String(icon));
   }
 
   // Create default SVG attributes
@@ -229,18 +313,14 @@ export const createSvgStr = (icon: IconNode, attrs?: Record<string, string>): st
     'stroke-width': '2',
     'stroke-linecap': 'round',
     'stroke-linejoin': 'round',
-    ...(attrs || {}),
+    ...attrs,
   };
-
-  // Format SVG attributes string
-  const svgAttrString = Object.entries(svgAttrs)
-    .map(([key, value]) => `${key}="${value}"`)
-    .join(' ');
+  const svgAttrString = toSafeAttributeString(svgAttrs);
 
   // Helper function to process a single element
   const processElement = (element: unknown): string => {
     if (!Array.isArray(element)) {
-      return String(element);
+      return escapeHtmlText(String(element));
     }
 
     const [tag, attributes = {}, children = []] = element as [
@@ -248,12 +328,8 @@ export const createSvgStr = (icon: IconNode, attrs?: Record<string, string>): st
       Record<string, string>,
       unknown[],
     ];
-    const tagName = String(tag);
-
-    // Format attributes string
-    const attrString = Object.entries(attributes)
-      .map(([key, value]) => `${key}="${value}"`)
-      .join(' ');
+    const tagName = toSafeTagName(tag);
+    const attrString = toSafeAttributeString(attributes);
 
     // Process children recursively
     let childrenString = '';

@@ -1,6 +1,15 @@
-import { substituteVariables, validateVariables } from '../src/multiVariableText/helper.js';
+import {
+  substituteVariables,
+  substituteVariablesAsInlineMarkdownLiterals,
+  validateVariables,
+} from '../src/multiVariableText/helper.js';
+import { parseInlineMarkdown, stripInlineMarkdown } from '../src/text/inlineMarkdown.js';
 import { MultiVariableTextSchema } from '../src/multiVariableText/types.js';
-
+import {
+  countUniqueVariableNames,
+  getVariableIndices,
+  getVariableNames,
+} from '../src/multiVariableText/variables.js';
 
 describe('substituteVariables', () => {
   it('should substitute variables in a string', () => {
@@ -45,6 +54,13 @@ describe('substituteVariables', () => {
     expect(result).toBe('Hello, !');
   });
 
+  it('should substitute variables with empty string values', () => {
+    const text = 'Hello, {name}!';
+    const variables = { name: '' };
+    const result = substituteVariables(text, variables);
+    expect(result).toBe('Hello, !');
+  });
+
   it('should handle variables as a JSON string', () => {
     const text = 'Hello, {name}!';
     const variables = '{"name": "World"}';
@@ -56,6 +72,40 @@ describe('substituteVariables', () => {
     const text = 'Hello, {name}!';
     const variables = 'invalid json';
     expect(() => substituteVariables(text, variables)).toThrow(SyntaxError);
+  });
+
+  it('should keep inline markdown variables as literal text while preserving template styling', () => {
+    const text = '**{name}** uses `{code}`';
+    const variables = { name: 'A **bold** user', code: 'PDF `42`' };
+    const result = substituteVariablesAsInlineMarkdownLiterals(text, variables);
+
+    expect(stripInlineMarkdown(result)).toBe('A **bold** user uses PDF `42`');
+    expect(parseInlineMarkdown(result)).toEqual([
+      { text: 'A **bold** user', bold: true },
+      { text: ' uses ' },
+      { text: 'PDF `42`', code: true },
+    ]);
+  });
+});
+
+describe('multiVariableText variable scanning', () => {
+  it('should record variable start indices for well-formed placeholders', () => {
+    const indices = getVariableIndices('{first} {second}');
+
+    expect(indices.get(0)).toBe('first');
+    expect(indices.get(8)).toBe('second');
+  });
+
+  it('should restart from the latest opening brace in malformed input', () => {
+    expect(getVariableNames('Hello {{name}}')).toEqual(['name']);
+  });
+
+  it('should match the innermost completed placeholder when braces are nested', () => {
+    expect(getVariableNames('{a{b}')).toEqual(['b']);
+  });
+
+  it('should count only unique completed variable names', () => {
+    expect(countUniqueVariableNames('{name} {name} {city')).toBe(1);
   });
 });
 
@@ -72,10 +122,22 @@ describe('validateVariables', () => {
     expect(validateVariables(value, schema)).toBe(true);
   });
 
+  it('should return true for empty string values with all required variables present', () => {
+    const value = JSON.stringify({ var1: '', var2: '' });
+    expect(validateVariables(value, schema)).toBe(true);
+  });
+
   it('should throw an error for missing required variables', () => {
     const value = JSON.stringify({ var1: 'value1' });
-    expect(() => validateVariables(value, schema)).toThrowError(
+    expect(() => validateVariables(value, schema)).toThrow(
       '[@pdfme/generator] variable var2 is missing for field test'
+    );
+  });
+
+  it('should throw an error for null required variable values', () => {
+    const value = JSON.stringify({ var1: null, var2: '' });
+    expect(() => validateVariables(value, schema)).toThrow(
+      '[@pdfme/generator] variable var1 is missing for field test'
     );
   });
 
@@ -90,9 +152,31 @@ describe('validateVariables', () => {
     expect(validateVariables(value, nonRequiredSchema)).toBe(false);
   });
 
+  it('should return true for empty string values with all non-required variables present', () => {
+    // @ts-ignore
+    const nonRequiredSchema: MultiVariableTextSchema = {
+      name: 'test',
+      variables: ['var1', 'var2'],
+      required: false,
+    };
+    const value = JSON.stringify({ var1: '', var2: '' });
+    expect(validateVariables(value, nonRequiredSchema)).toBe(true);
+  });
+
+  it('should return false for null non-required variable values', () => {
+    // @ts-ignore
+    const nonRequiredSchema: MultiVariableTextSchema = {
+      name: 'test',
+      variables: ['var1', 'var2'],
+      required: false,
+    };
+    const value = JSON.stringify({ var1: null, var2: '' });
+    expect(validateVariables(value, nonRequiredSchema)).toBe(false);
+  });
+
   it('should throw an error for invalid JSON input', () => {
     const value = '{ var1: value1 var2: value2 }'; // Invalid JSON
-    expect(() => validateVariables(value, schema)).toThrowError(SyntaxError);
+    expect(() => validateVariables(value, schema)).toThrow(SyntaxError);
   });
 
   it('should return true for a string with no variables', () => {

@@ -1,12 +1,24 @@
 import { useState } from 'react';
-import { NavLink } from 'react-router-dom';
+import { NavLink, useLocation } from 'react-router-dom';
 import { PDFME_VERSION } from '@pdfme/common';
 import { Dialog, DialogBackdrop, DialogPanel, DialogTitle } from '@headlessui/react';
 
-const externalIcon = <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="size-4 ml-1">
-  <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H5.25A2.25 2.25 0 0 0 3 8.25v10.5A2.25 2.25 0 0 0 5.25 21h10.5A2.25 2.25 0 0 0 18 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
-</svg>
-
+const externalIcon = (
+  <svg
+    xmlns="http://www.w3.org/2000/svg"
+    fill="none"
+    viewBox="0 0 24 24"
+    strokeWidth={1.5}
+    stroke="currentColor"
+    className="size-4 ml-1"
+  >
+    <path
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      d="M13.5 6H5.25A2.25 2.25 0 0 0 3 8.25v10.5A2.25 2.25 0 0 0 5.25 21h10.5A2.25 2.25 0 0 0 18 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25"
+    />
+  </svg>
+);
 
 function classNames(...classes: string[]) {
   return classes.filter(Boolean).join(' ');
@@ -51,7 +63,7 @@ function HelpModal({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }
                     onClick={() =>
                       window.open(
                         'https://app.pdfme.com/contact?utm_source=playground&utm_content=need-help',
-                        '_blank'
+                        '_blank',
                       )
                     }
                     className="flex justify-center items-center w-full rounded-md bg-blue-500 px-3 py-2 text-sm font-semibold text-white shadow-sm hover:bg-blue-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500"
@@ -94,30 +106,47 @@ function HelpModal({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }
 
 export default function Navigation() {
   const [helpModalOpen, setHelpModalOpen] = useState(false);
+  const location = useLocation();
 
   const navLinks = [
     { id: 'templates-nav', to: '/templates', label: 'Templates' },
+    { id: 'workspace-nav', to: '/workspace', label: 'My Workspace' },
     { id: 'designer-nav', to: '/designer', label: 'Designer' },
     { id: 'form-viewer-nav', to: '/form-viewer', label: 'Form/Viewer' },
+    { id: 'jsx-nav', to: '/jsx', label: 'JSX' },
+    { id: 'md2pdf-nav', to: '/md2pdf', label: 'md2pdf' },
   ];
 
-  const linkClass = ({ isActive }: { isActive: boolean }) =>
+  const linkClass = ({ isActive }: { isActive: boolean }, to: string) =>
     classNames(
-      isActive
+      isActive || (to === '/templates' && location.pathname === '/')
         ? 'border-green-500 text-green-600'
         : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700',
-      'whitespace-nowrap border-b-2 px-1 py-2 text-sm font-medium'
+      'whitespace-nowrap border-b-2 px-1 py-2 text-sm font-medium',
     );
 
   return (
-    <div className="border-b border-gray-200 my-1 overflow-x-auto">
-      <nav aria-label="Tabs" className="-mb-px flex items-center space-x-3 px-4">
-        <span className="text-xs text-gray-500 select-none">
+    <div className="sticky top-0 z-30 overflow-x-auto overflow-y-hidden border-b border-gray-200 bg-white/95 shadow-sm backdrop-blur">
+      <nav aria-label="Tabs" className="-mb-px flex w-max min-w-full items-center gap-3 px-4">
+        <NavLink
+          to="/"
+          className="flex items-center gap-2 py-2 pr-2 text-sm font-semibold text-gray-900 hover:text-green-700"
+        >
+          <span className="size-2 rounded-full bg-green-500 shadow-[0_0_0_3px_rgba(34,197,94,0.16)]" />
+          pdfme playground
+        </NavLink>
+        <span className="rounded-full bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-600 select-none">
           Version: {PDFME_VERSION}
         </span>
 
         {navLinks.map((item) => (
-          <NavLink id={item.id} key={item.to} to={item.to} end className={linkClass}>
+          <NavLink
+            id={item.id}
+            key={item.to}
+            to={item.to}
+            end
+            className={(state) => linkClass(state, item.to)}
+          >
             {item.label}
           </NavLink>
         ))}

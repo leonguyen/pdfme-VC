@@ -1,23 +1,32 @@
-import { Routes, Route, useSearchParams } from "react-router-dom";
+import { Suspense, lazy } from 'react';
+import { Routes, Route } from 'react-router-dom';
 import { ToastContainer } from 'react-toastify';
-import Designer from "./routes/Designer";
-import FormAndViewer from "./routes/FormAndViewer";
-import Templates from "./routes/Templates";
-import Header from "./components/Header";
+import Header from './components/Header';
+
+const Designer = lazy(() => import('./routes/Designer'));
+const FormAndViewer = lazy(() => import('./routes/FormAndViewer'));
+const Templates = lazy(() => import('./routes/Templates'));
+const WorkspaceApp = lazy(() =>
+  import('./routes/Templates').then((module) => ({ default: module.WorkspaceApp })),
+);
+const JsxPlayground = lazy(() => import('./routes/JsxPlayground'));
+const Md2Pdf = lazy(() => import('./routes/Md2Pdf'));
 
 export default function App() {
-  const [searchParams] = useSearchParams();
-  const isEmbedded = searchParams.get("embed") === "true";
-
   return (
     <div className="min-h-screen flex flex-col">
-      {!isEmbedded && <Header />}
-      <Routes>
-        <Route path={"/"} element={<Designer />} />
-        <Route path={"/designer"} element={<Designer />} />
-        <Route path="/form-viewer" element={<FormAndViewer />} />
-        <Route path="/templates" element={<Templates isEmbedded={isEmbedded} />} />
-      </Routes>
+      <Header />
+      <Suspense fallback={<main className="min-h-0 flex-1 bg-gray-100" />}>
+        <Routes>
+          <Route path={'/'} element={<Templates />} />
+          <Route path="/workspace" element={<WorkspaceApp />} />
+          <Route path={'/designer'} element={<Designer />} />
+          <Route path="/form-viewer" element={<FormAndViewer />} />
+          <Route path="/jsx" element={<JsxPlayground />} />
+          <Route path="/md2pdf" element={<Md2Pdf />} />
+          <Route path="/templates" element={<Templates />} />
+        </Routes>
+      </Suspense>
       <ToastContainer />
     </div>
   );

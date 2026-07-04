@@ -9,9 +9,11 @@ import {
   getFallbackFontName,
   getDefaultFont,
   DEFAULT_FONT_NAME,
+  isUrlSafeToFetch,
 } from '@pdfme/common';
 import { Buffer } from 'buffer';
 import type { TextSchema, FontWidthCalcValues } from './types.js';
+import { getBoxContentArea } from '../box.js';
 import {
   DEFAULT_FONT_SIZE,
   DEFAULT_CHARACTER_SPACING,
@@ -88,18 +90,44 @@ const calculateCharacterSpacing = (textContent: string, textCharacterSpacing: nu
   return (textContent.length - 1) * textCharacterSpacing;
 };
 
+const TEXT_WIDTH_CACHE_LIMIT = 5000;
+const textWidthCache = new WeakMap<FontKitFont, Map<string, number>>();
+
+const getTextWidthCache = (fontKitFont: FontKitFont) => {
+  let cache = textWidthCache.get(fontKitFont);
+  if (!cache) {
+    cache = new Map<string, number>();
+    textWidthCache.set(fontKitFont, cache);
+  }
+  return cache;
+};
+
 export const widthOfTextAtSize = (
   text: string,
   fontKitFont: FontKitFont,
   fontSize: number,
   characterSpacing: number,
 ) => {
+  const cache = getTextWidthCache(fontKitFont);
+  const cacheKey = `${fontSize}\0${characterSpacing}\0${text}`;
+  const cachedWidth = cache.get(cacheKey);
+  if (cachedWidth !== undefined) {
+    return cachedWidth;
+  }
+
   const { glyphs } = fontKitFont.layout(text);
   const scale = 1000 / fontKitFont.unitsPerEm;
   const standardWidth =
     glyphs.reduce((totalWidth, glyph) => totalWidth + glyph.advanceWidth * scale, 0) *
     (fontSize / 1000);
-  return standardWidth + calculateCharacterSpacing(text, characterSpacing);
+  const width = standardWidth + calculateCharacterSpacing(text, characterSpacing);
+
+  if (cache.size >= TEXT_WIDTH_CACHE_LIMIT) {
+    cache.clear();
+  }
+  cache.set(cacheKey, width);
+
+  return width;
 };
 
 const getFallbackFont = (font: Font) => {
@@ -108,6 +136,27 @@ const getFallbackFont = (font: Font) => {
 };
 
 const getCacheKey = (fontName: string) => `getFontKitFont-${fontName}`;
+type FontKitFontCacheValue = fontkit.Font | Promise<fontkit.Font>;
+
+export const fetchRemoteFontData = async (url: string): Promise<ArrayBuffer> => {
+  if (!isUrlSafeToFetch(url)) {
+    throw Error(
+      '[@pdfme/schemas] Invalid or unsafe URL for font data. Only http: and https: URLs pointing to public hosts are allowed.',
+    );
+  }
+
+  try {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    return await response.arrayBuffer();
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw Error(`[@pdfme/schemas] Failed to fetch remote font data from ${url}. ${reason}`);
+  }
+};
 
 export const getFontKitFont = async (
   fontName: string | undefined,
@@ -116,29 +165,44 @@ export const getFontKitFont = async (
 ) => {
   const fntNm = fontName || getFallbackFontName(font);
   const cacheKey = getCacheKey(fntNm);
-  if (_cache.has(cacheKey)) {
-    return _cache.get(cacheKey) as fontkit.Font;
+  const fontCache = _cache as Map<string | number, FontKitFontCacheValue>;
+  const cachedFont = fontCache.get(cacheKey);
+  if (cachedFont) {
+    return await cachedFont;
   }
 
   const currentFont = font[fntNm] || getFallbackFont(font) || getDefaultFont()[DEFAULT_FONT_NAME];
-  let fontData = currentFont.data;
-  if (typeof fontData === 'string') {
-    fontData = fontData.startsWith('http')
-      ? await fetch(fontData).then((res) => res.arrayBuffer())
-      : b64toUint8Array(fontData);
-  }
+  const fontKitFontPromise = (async () => {
+    let fontData = currentFont.data;
+    if (typeof fontData === 'string') {
+      if (fontData.startsWith('http')) {
+        fontData = await fetchRemoteFontData(fontData);
+      } else {
+        fontData = b64toUint8Array(fontData);
+      }
+    }
 
-  // Convert fontData to Buffer if it's not already a Buffer
-  let fontDataBuffer: Buffer;
-  if (fontData instanceof Buffer) {
-    fontDataBuffer = fontData;
-  } else {
-    fontDataBuffer = Buffer.from(fontData as ArrayBufferLike);
-  }
-  const fontKitFont = fontkit.create(fontDataBuffer) as fontkit.Font;
-  _cache.set(cacheKey, fontKitFont);
+    // Convert fontData to Buffer if it's not already a Buffer
+    let fontDataBuffer: Buffer;
+    if (fontData instanceof Buffer) {
+      fontDataBuffer = fontData;
+    } else {
+      fontDataBuffer = Buffer.from(fontData as ArrayBufferLike);
+    }
+    return fontkit.create(fontDataBuffer) as fontkit.Font;
+  })();
+  fontCache.set(cacheKey, fontKitFontPromise);
 
-  return fontKitFont;
+  try {
+    const fontKitFont = await fontKitFontPromise;
+    fontCache.set(cacheKey, fontKitFont);
+    return fontKitFont;
+  } catch (error) {
+    if (fontCache.get(cacheKey) === fontKitFontPromise) {
+      fontCache.delete(cacheKey);
+    }
+    throw error;
+  }
 };
 
 const isTextExceedingBoxWidth = (text: string, calcValues: FontWidthCalcValues) => {
@@ -243,10 +307,9 @@ export const calculateDynamicFontSize = ({
     fontSize: schemaFontSize,
     dynamicFontSize: dynamicFontSizeSetting,
     characterSpacing: schemaCharacterSpacing,
-    width: boxWidth,
-    height: boxHeight,
     lineHeight = DEFAULT_LINE_HEIGHT,
   } = textSchema;
+  const { width: boxWidth, height: boxHeight } = getBoxContentArea(textSchema);
   const fontSize = startingFontSize || schemaFontSize || DEFAULT_FONT_SIZE;
   if (!dynamicFontSizeSetting) return fontSize;
   if (dynamicFontSizeSetting.max < dynamicFontSizeSetting.min) return fontSize;
@@ -367,12 +430,19 @@ export const splitTextToSize = (arg: {
     boxWidthInPt,
   };
   let lines: string[] = [];
-  value.split(/\r\n|\r|\n|\f|\u000B/g).forEach((line: string) => {
+  value.split(/\r\n|\r|\n|\f|\v/g).forEach((line: string) => {
     lines = lines.concat(getSplittedLinesBySegmenter(line, fontWidthCalcValues));
   });
   return lines;
 };
 export const isFirefox = () => navigator.userAgent.toLowerCase().indexOf('firefox') > -1;
+
+let wordSegmenter: Intl.Segmenter | undefined;
+
+const getWordSegmenter = () => {
+  wordSegmenter ??= new Intl.Segmenter(undefined, { granularity: 'word' });
+  return wordSegmenter;
+};
 
 const getSplittedLinesBySegmenter = (line: string, calcValues: FontWidthCalcValues): string[] => {
   // nothing to process but need to keep this for new lines.
@@ -381,7 +451,7 @@ const getSplittedLinesBySegmenter = (line: string, calcValues: FontWidthCalcValu
   }
 
   const { font, fontSize, characterSpacing, boxWidthInPt } = calcValues;
-  const segmenter = new Intl.Segmenter(undefined, { granularity: 'word' });
+  const segmenter = getWordSegmenter();
   const iterator = segmenter.segment(line.trimEnd())[Symbol.iterator]();
 
   let lines: string[] = [];

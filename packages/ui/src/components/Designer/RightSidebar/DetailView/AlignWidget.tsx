@@ -1,6 +1,7 @@
 import { Space, Button, Form } from 'antd';
 import React from 'react';
 import type { PropPanelWidgetProps } from '@pdfme/common';
+import { DESIGNER_CLASSNAME } from '../../../../constants.js';
 import {
   AlignStartVertical,
   AlignStartHorizontal,
@@ -65,8 +66,7 @@ const AlignWidget = (props: PropPanelWidgetProps) => {
 
     let basePos = min;
     // Define adjust function with consistent parameter usage
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    let adjust = (_size: number): number => 0;
+    let adjust: (size: number) => number = () => 0;
 
     if (['center', 'middle'].includes(type)) {
       basePos = (min + max) / 2;
@@ -209,10 +209,11 @@ const AlignWidget = (props: PropPanelWidgetProps) => {
   ];
 
   return (
-    <Form.Item label={schema.title}>
+    <Form.Item label={schema?.title}>
       <Space.Compact>
         {layoutBtns.map((btn) => (
           <Button
+            className={DESIGNER_CLASSNAME + 'align-' + btn.id}
             key={btn.id}
             style={{ padding: 7 }}
             disabled={activeElements.length <= 2 && ['vertical', 'horizontal'].includes(btn.id)}

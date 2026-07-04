@@ -6,9 +6,13 @@
 また、独自のスキーマを作成し、同様にプラグインとして読み込むこともできます。
 このページでは、`@pdfme/schemas`からスキーマを使用する方法と、独自のスキーマを作成する方法について説明します。
 
-## @pdfme/schemasからのスキーマの使用
+:::note
+`@pdfme/generator` と `@pdfme/ui` が使うデフォルトのプラグインレジストリには、意図的に `text` スキーマだけが含まれています。テンプレートでそれ以外の built-in schema type を使う場合は、`@pdfme/schemas` から対象プラグインを import して `plugins` に渡してください。
+:::
 
-ここでは、`@pdfme/schemas`から画像とQRコードのスキーマをインポートする方法を説明します。
+## @pdfme/schemasからのスキーマの使用 {#using-schemas-from-pdfmeschemas}
+
+ここでは、`@pdfme/schemas`から画像、署名、QRコードのスキーマをインポートする方法を説明します。
 
 まず、`@pdfme/schemas`をインストールします。
 
@@ -18,15 +22,15 @@ npm install @pdfme/schemas
 
 次に、必要なスキーマを`@pdfme/schemas`から`@pdfme/generator`と`@pdfme/ui`にインポートします。
 
-以下のコードは、`@pdfme/generator`と`@pdfme/ui`からQRコードと画像のスキーマをインポートする例を示しています。
+以下のコードは、`@pdfme/generator`と`@pdfme/ui`からQRコード、署名、画像のスキーマをインポートする例を示しています。
 
 ```ts
 import type { Template } from '@pdfme/common';
-import { text, image, barcodes } from '@pdfme/schemas';
+import { text, image, signature, barcodes } from '@pdfme/schemas';
 import { generate } from '@pdfme/generator';
 
 const template: Template = {
-  // 省略... テンプレートでtext、image、qrcodeスキーマタイプを使用できます。
+  // 省略... テンプレートでtext、image、signature、qrcodeスキーマタイプを使用できます。
 };
 const inputs = [
   // 省略...
@@ -39,6 +43,7 @@ const pdf = await generate({
   plugins: {
     text,
     image,
+    signature,
     qrcode: barcodes.qrcode,
   },
 });
@@ -48,12 +53,12 @@ const pdf = await generate({
 
 ```ts
 import type { Template } from '@pdfme/common';
-import { text, image, barcodes } from '@pdfme/schemas';
+import { text, image, signature, barcodes } from '@pdfme/schemas';
 import { Designer } from '@pdfme/ui';
 
 const domContainer = document.getElementById('container');
 const template: Template = {
-  // 省略... テンプレートでtext、image、qrcodeスキーマタイプを使用できます。
+  // 省略... テンプレートでtext、image、signature、qrcodeスキーマタイプを使用できます。
 };
 
 const designer = new Designer({
@@ -63,12 +68,13 @@ const designer = new Designer({
   plugins: {
     text,
     image,
+    signature,
     qrcode: barcodes.qrcode,
   },
 });
 ```
 
-imageとqrcodeをプラグインとして読み込むことで、テンプレートのスキーマに含まれるimageタイプとqrcodeタイプのスキーマをレンダリングできます。
+image、signature、qrcodeをプラグインとして読み込むことで、テンプレートのスキーマに含まれるimageタイプ、signatureタイプ、qrcodeタイプのスキーマをレンダリングできます。
 
 ![](/img/custom-schemas.png)
 
@@ -86,7 +92,7 @@ Designerからプラグインを使用することで、デフォルトのスキ
 ![](/img/custom-schemas-tips.png)
 :::
 
-## 独自のスキーマの作成
+## 独自のスキーマの作成 {#creating-your-own-schemas}
 
 次に、独自のスキーマを作成したい人のための方法を紹介します。  
 スキーマを作成した場合や、アイデアがある場合は、[GitHub Discussions](https://github.com/pdfme/pdfme/discussions/288)で共有してください。  
@@ -145,7 +151,7 @@ pdfmeは[pdf-lib](https://pdf-lib.js.org/)と[form-render](https://xrender.fun/f
 [![](/img/signature-schema.gif)](https://playground.pdfme.com/)
 
 - デモ: https://playground.pdfme.com/
-- コード: [pdfme-playground/src/plugins/signature.ts](https://github.com/pdfme/pdfme-playground/blob/main/src/plugins/signature.ts)
+- コード: [packages/schemas/src/graphics/signature.ts](https://github.com/pdfme/pdfme/blob/main/packages/schemas/src/graphics/signature.ts)
 
 
 ### カスタムスキーマ作成時の注意点

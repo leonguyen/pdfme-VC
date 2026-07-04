@@ -1,23 +1,30 @@
-import type { PDFDocumentProxy } from 'pdfjs-dist';
-import type { ImageType } from './types.js';
-
 interface Environment {
-  getDocument: (pdf: ArrayBuffer | Uint8Array) => Promise<PDFDocumentProxy>;
-  createCanvas: (width: number, height: number) => HTMLCanvasElement | OffscreenCanvas;
-  canvasToArrayBuffer: (
-    canvas: HTMLCanvasElement | OffscreenCanvas,
-    imageType: ImageType,
-  ) => ArrayBuffer;
+  openDocument: (pdf: ArrayBuffer | Uint8Array) => Promise<PdfDocument>;
+}
+
+interface PdfDocument {
+  readonly pageCount: number;
+  page: (pageNumber: number) => PdfPage;
+  destroy?: () => Promise<void> | void;
+}
+
+interface PdfPage {
+  png: (options?: { scale?: number; forms?: boolean }) => Promise<Uint8Array>;
 }
 
 export interface Pdf2ImgOptions {
   scale?: number;
-  imageType?: ImageType;
   range?: {
     start?: number;
     end?: number;
   };
 }
+
+const uint8ArrayToArrayBuffer = (bytes: Uint8Array): ArrayBuffer => {
+  const buffer = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(buffer).set(bytes);
+  return buffer;
+};
 
 export async function pdf2img(
   pdf: ArrayBuffer | Uint8Array,
@@ -25,39 +32,29 @@ export async function pdf2img(
   env: Environment,
 ): Promise<ArrayBuffer[]> {
   try {
-    const { scale = 1, imageType = 'jpeg', range = {} } = options;
+    const { scale = 1, range = {} } = options;
     const { start = 0, end = Infinity } = range;
 
-    const { getDocument, createCanvas, canvasToArrayBuffer } = env;
+    const { openDocument } = env;
 
-    const pdfDoc = await getDocument(pdf);
-    const numPages = pdfDoc.numPages;
+    const pdfDoc = await openDocument(pdf);
+    try {
+      const numPages = pdfDoc.pageCount;
 
-    const startPage = Math.max(start + 1, 1);
-    const endPage = Math.min(end + 1, numPages);
+      const startPage = Math.max(start + 1, 1);
+      const endPage = Math.min(end + 1, numPages);
 
-    const results: ArrayBuffer[] = [];
+      const results: ArrayBuffer[] = [];
 
-    for (let pageNum = startPage; pageNum <= endPage; pageNum++) {
-      const page = await pdfDoc.getPage(pageNum);
-      const viewport = page.getViewport({ scale });
-
-      const canvas = createCanvas(viewport.width, viewport.height);
-      if (!canvas) {
-        throw new Error('Failed to create canvas');
+      for (let pageNum = startPage; pageNum <= endPage; pageNum++) {
+        const png = await pdfDoc.page(pageNum).png({ scale, forms: true });
+        results.push(uint8ArrayToArrayBuffer(png));
       }
 
-      const context = canvas.getContext('2d') as CanvasRenderingContext2D;
-      if (!context) {
-        throw new Error('Failed to get canvas context');
-      }
-
-      await page.render({ canvasContext: context, viewport }).promise;
-      const arrayBuffer = canvasToArrayBuffer(canvas, imageType);
-      results.push(arrayBuffer);
+      return results;
+    } finally {
+      await pdfDoc.destroy?.();
     }
-
-    return results;
   } catch (error) {
     throw new Error(`[@pdfme/converter] pdf2img failed: ${(error as Error).message}`);
   }

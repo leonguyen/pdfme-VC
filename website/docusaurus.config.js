@@ -1,18 +1,24 @@
 // @ts-check
 // Note: type annotations allow type checking and IDEs autocompletion
 
+const playgroundUrl = 'https://playground.pdfme.com';
+
 /** @type {import('@docusaurus/types').Config} */
 const config = {
   title: 'pdfme',
   url: 'https://pdfme.com',
   baseUrl: '/',
   onBrokenLinks: 'throw',
-  onBrokenMarkdownLinks: 'warn',
   favicon: 'favicon.ico',
   organizationName: 'pdfme',
   projectName: 'pdfme',
   deploymentBranch: 'website',
   trailingSlash: false,
+  markdown: {
+    hooks: {
+      onBrokenMarkdownLinks: 'warn',
+    },
+  },
   i18n: {
     defaultLocale: 'en',
     locales: ['en', 'ja'],
@@ -63,23 +69,23 @@ const config = {
             from: '/development-guide',
           },
           {
-            to: '/templates',
+            to: playgroundUrl,
             from: '/demo'
           },
           {
-            to: '/templates',
+            to: playgroundUrl,
             from: '/demo/address-label-maker'
           },
           {
-            to: '/templates',
+            to: playgroundUrl,
             from: '/demo/barcode-qrcode-generator'
           },
           {
-            to: '/templates',
+            to: playgroundUrl,
             from: '/demo/free-invoice-generator'
           },
           {
-            to: '/templates',
+            to: playgroundUrl,
             from: '/demo/online-certificate-maker'
           }
         ],
@@ -90,9 +96,11 @@ const config = {
   /** @type {import('@docusaurus/preset-classic').ThemeConfig} */
   {
     announcementBar: {
-      id: 'deepwiki_launch',
-      content: `🚀 &nbsp; Check out our new <a target="_blank" rel="noopener noreferrer" href="https://deepwiki.com/pdfme/pdfme">DeepWiki</a>! Ask interactive questions on docs and source code. &nbsp; 🧑‍💻`,
-    },    
+      id: 'github_star_cta',
+      content: `⭐ &nbsp; pdfme is open source. If it saves you time, please <a target="_blank" rel="noopener noreferrer" href="https://github.com/pdfme/pdfme" style="color: #ffffff; font-weight: 700; text-decoration: underline; text-underline-offset: 2px;">star us on GitHub</a> to help more developers discover it. &nbsp; ⭐`,
+      backgroundColor: '#24292f',
+      textColor: '#ffffff',
+    },
     image: 'img/ogimage.png',
     docs: {
       sidebar: {
@@ -110,14 +118,10 @@ const config = {
           label: 'Docs',
         },
         {
-          to: '/templates',
+          href: playgroundUrl,
           position: 'right',
-          label: 'Examples',
-        },
-        {
-          to: '/template-design',
-          position: 'right',
-          label: 'Template Design',
+          label: 'Demo',
+          target: '_blank',
         },
         {
           href: 'https://github.com/pdfme/pdfme',
@@ -166,11 +170,13 @@ const config = {
           items: [
             {
               label: 'Examples',
-              to: '/templates',
+              href: playgroundUrl,
+              target: '_blank',
             },
             {
               label: 'Template Design',
-              to: '/template-design',
+              href: `${playgroundUrl}/designer`,
+              target: '_blank',
             },
             {
               label: 'Try pdfme Cloud',

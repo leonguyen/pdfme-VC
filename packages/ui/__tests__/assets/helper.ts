@@ -1,26 +1,66 @@
 import * as hooks from '../../src/hooks';
-import { uuid } from '../../src/helper';
-import { BLANK_PDF, Template } from '@pdfme/common';
+import * as helper from '../../src/helper';
+import { BLANK_A4_PDF, BLANK_PDF, PAGE_SIZE_PRESETS, Template } from '@pdfme/common';
 
-export const setupUIMock = () => {
-  const backgrounds = ['data:image/png;base64,a...'];
-  const pageSizes = [{ height: 297, width: 210 }];
-  const mock = jest.spyOn(hooks, 'useUIPreProcessor');
+const restorePrototypeDescriptor = (
+  property: 'clientWidth' | 'clientHeight',
+  descriptor?: PropertyDescriptor,
+) => {
+  if (descriptor) {
+    Object.defineProperty(HTMLElement.prototype, property, descriptor);
+    return;
+  }
+  Reflect.deleteProperty(HTMLElement.prototype, property);
+};
+
+export const mockClientSizeFromStyle = () => {
+  const clientWidthDescriptor = Object.getOwnPropertyDescriptor(
+    HTMLElement.prototype,
+    'clientWidth',
+  );
+  const clientHeightDescriptor = Object.getOwnPropertyDescriptor(
+    HTMLElement.prototype,
+    'clientHeight',
+  );
+
+  Object.defineProperty(HTMLElement.prototype, 'clientWidth', {
+    configurable: true,
+    get() {
+      return Number.parseFloat(this.style.width) || 1200;
+    },
+  });
+  Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
+    configurable: true,
+    get() {
+      return Number.parseFloat(this.style.height) || 1200;
+    },
+  });
+
+  return () => {
+    restorePrototypeDescriptor('clientWidth', clientWidthDescriptor);
+    restorePrototypeDescriptor('clientHeight', clientHeightDescriptor);
+  };
+};
+
+export const setupUIMock = (pageCount = 1) => {
+  const backgrounds = Array.from({ length: pageCount }, () => 'data:image/png;base64,a...');
+  const pageSizes = Array.from({ length: pageCount }, () => PAGE_SIZE_PRESETS.A4);
+  const mock = vi.spyOn(hooks, 'useUIPreProcessor');
   mock.mockImplementation(() => ({
     backgrounds,
     pageSizes,
+    baseScale: 1,
     scale: 1,
     error: null,
     refresh: () => Promise.resolve(),
   }));
-  (uuid as jest.Mock) = jest
-    .fn()
+  vi.spyOn(helper, 'uuid')
     .mockReturnValueOnce('1')
     .mockReturnValueOnce('2')
     .mockReturnValueOnce('3')
     .mockReturnValueOnce('4')
     .mockReturnValueOnce('5');
-  const FontFace = jest.fn().mockReturnValue({ load: () => Promise.resolve() });
+  const FontFace = vi.fn().mockReturnValue({ load: () => Promise.resolve() });
   global.window.FontFace = FontFace;
 };
 
@@ -51,3 +91,18 @@ export const getSampleTemplate = (): Template => ({
     ],
   ],
 });
+
+export const getTwoPageTemplate = (): Template => {
+  const template = getSampleTemplate();
+  const secondPage = template.schemas[0].map((schema) => ({
+    ...schema,
+    name: `${schema.name}Page2`,
+    position: { ...schema.position },
+  }));
+
+  return {
+    ...template,
+    basePdf: BLANK_A4_PDF,
+    schemas: [template.schemas[0], secondPage],
+  };
+};

@@ -8,7 +8,7 @@ import { createSvgStr } from '../utils.js';
 
 const selectIcon = createSvgStr(ChevronDown);
 
-interface Select extends TextSchema {
+export interface SelectSchema extends TextSchema {
   options: string[];
 }
 
@@ -17,7 +17,7 @@ const addOptions = (props: PropPanelWidgetProps) => {
 
   rootElement.style.width = '100%';
 
-  const selectSchema = activeSchema as SchemaForUI & Select;
+  const selectSchema = activeSchema as SchemaForUI & SelectSchema;
   const currentOptions = selectSchema.options ? [...selectSchema.options] : [];
 
   const inputStyle = {
@@ -111,7 +111,7 @@ const addOptions = (props: PropPanelWidgetProps) => {
   renderOptions();
 };
 
-const schema: Plugin<Select> = {
+const schema: Plugin<SelectSchema> = {
   ui: async (arg) => {
     const { schema, value, onChange, rootElement, mode } = arg;
     await text.ui(Object.assign(arg, { mode: 'viewer' }));
@@ -156,12 +156,13 @@ const schema: Plugin<Select> = {
 
       // Ensure schema.options is an array before mapping
       const options = Array.isArray(schema.options) ? schema.options : [];
-      selectElement.innerHTML = options
-        .map(
-          (option) =>
-            `<option value="${option}" ${option === value ? 'selected' : ''}>${option}</option>`,
-        )
-        .join('');
+      options.forEach((option) => {
+        const optionElement = document.createElement('option');
+        optionElement.value = option;
+        optionElement.textContent = option;
+        if (option === value) optionElement.selected = true;
+        selectElement.appendChild(optionElement);
+      });
       rootElement.appendChild(selectElement);
     }
   },

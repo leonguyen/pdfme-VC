@@ -1,112 +1,17 @@
-import fs from 'fs';
-import path from 'path';
-import crypto from 'crypto';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import pLimit from 'p-limit';
-import { generate } from '@pdfme/generator/cjs/src/index.js';
-import { pdf2img } from '@pdfme/converter/cjs/src/index.node.js';
-import { getInputFromTemplate, getDefaultFont } from '@pdfme/common/cjs/src/index.js';
-import {
-  multiVariableText,
-  text,
-  barcodes,
-  image,
-  svg,
-  line,
-  table,
-  rectangle,
-  ellipse,
-  dateTime,
-  date,
-  time,
-  select,
-  checkbox,
-  radioGroup,
-} from '@pdfme/schemas/cjs/src/index.js';
+import { createThumbnailFromTemplate } from './template-thumbnail-utils.mjs';
 
-const __dirname = path.dirname(new URL(import.meta.url).pathname);
-
-const plugins = {
-  multiVariableText,
-  text,
-  qrcode: barcodes.qrcode,
-  japanpost: barcodes.japanpost,
-  ean13: barcodes.ean13,
-  code128: barcodes.code128,
-  image,
-  svg,
-  line,
-  table,
-  rectangle,
-  ellipse,
-  dateTime,
-  date,
-  time,
-  select,
-  checkbox,
-  radioGroup,
-  signature: {
-    ui: async () => { },
-    pdf: image.pdf,
-    propPanel: {
-      schema: {},
-      defaultSchema: {
-        name: '',
-        type: 'signature',
-        content: '',
-        position: { x: 0, y: 0 },
-        width: 62.5,
-        height: 37.5,
-      },
-    },
-  },
-};
-
-const font = {
-  ...getDefaultFont(),
-  'PinyonScript-Regular': {
-    fallback: false,
-    data: 'https://fonts.gstatic.com/s/pinyonscript/v22/6xKpdSJbL9-e9LuoeQiDRQR8aOLQO4bhiDY.ttf',
-  },
-  NotoSerifJP: {
-    fallback: false,
-    data: 'https://fonts.gstatic.com/s/notoserifjp/v30/xn71YHs72GKoTvER4Gn3b5eMRtWGkp6o7MjQ2bwxOubAILO5wBCU.ttf',
-  },
-  NotoSansJP: {
-    fallback: false,
-    data: 'https://fonts.gstatic.com/s/notosansjp/v53/-F6jfjtqLzI2JPCgQBnw7HFyzSD-AsregP8VFBEj75vY0rw-oME.ttf',
-  }
-};
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const limit = pLimit(4);
 
 function calcHash(content) {
   return crypto.createHash('md5').update(content, 'utf8').digest('hex');
-}
-
-
-async function createThumbnailFromTemplate(templatePath, thumbnailPath) {
-  try {
-    const templateJsonStr = fs.readFileSync(templatePath, 'utf-8');
-    const templateJson = JSON.parse(templateJsonStr);
-
-    const pdf = await generate({
-      template: templateJson,
-      inputs: getInputFromTemplate(templateJson),
-      options: { font },
-      plugins,
-    });
-
-    const images = await pdf2img(pdf.buffer, {
-      imageType: 'png',
-      range: { end: 1 },
-    });
-
-    const thumbnail = images[0];
-    fs.writeFileSync(thumbnailPath, Buffer.from(thumbnail));
-  } catch (err) {
-    console.error(`Failed to create thumbnail from ${templatePath}:`, err);
-    throw err;
-  }
 }
 
 async function main() {

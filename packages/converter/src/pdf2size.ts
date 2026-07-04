@@ -1,8 +1,18 @@
-import type { PDFDocumentProxy } from 'pdfjs-dist';
 import { Size, pt2mm } from '@pdfme/common';
 
 interface Environment {
-  getDocument: (pdf: ArrayBuffer | Uint8Array) => Promise<PDFDocumentProxy>;
+  openDocument: (pdf: ArrayBuffer | Uint8Array) => Promise<PdfDocument>;
+}
+
+interface PdfDocument {
+  readonly pageCount: number;
+  page: (pageNumber: number) => PdfPage;
+  destroy?: () => Promise<void> | void;
+}
+
+interface PdfPage {
+  readonly width: number;
+  readonly height: number;
 }
 
 export interface Pdf2SizeOptions {
@@ -15,19 +25,15 @@ export async function pdf2size(
   env: Environment,
 ): Promise<Size[]> {
   const { scale = 1 } = options;
-  const { getDocument } = env;
+  const { openDocument } = env;
+  const pdfDoc = await openDocument(pdf);
 
-  const pdfDoc = await getDocument(pdf);
-
-  const promises = Promise.all(
-    new Array(pdfDoc.numPages).fill('').map(async (_, i) => {
-      return await pdfDoc.getPage(i + 1).then((page) => {
-        const { height, width } = page.getViewport({ scale, rotation: 0 });
-
-        return { height: pt2mm(height), width: pt2mm(width) };
-      });
-    }),
-  );
-
-  return promises;
+  try {
+    return Array.from({ length: pdfDoc.pageCount }, (_, i) => {
+      const page = pdfDoc.page(i + 1);
+      return { height: pt2mm(page.height * scale), width: pt2mm(page.width * scale) };
+    });
+  } finally {
+    await pdfDoc.destroy?.();
+  }
 }

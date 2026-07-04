@@ -1,5 +1,12 @@
 import { Schema, mm2pt, pt2mm } from '@pdfme/common';
-import { convertForPdfLayoutProps, rotatePoint, hex2RgbColor, createSvgStr } from '../src/utils.js';
+import type { CMYK } from '@pdfme/pdf-lib';
+import {
+  convertForPdfLayoutProps,
+  rotatePoint,
+  hex2RgbColor,
+  hex2PrintingColor,
+  createSvgStr,
+} from '../src/utils.js';
 import { SquareCheck, IconNode } from 'lucide';
 
 describe('hex2RgbColor', () => {
@@ -28,7 +35,45 @@ describe('hex2RgbColor', () => {
 
   it('should throw an error if hex is invalid', () => {
     const hex = '#fffee';
-    expect(() => hex2RgbColor(hex)).toThrowError('Invalid hex color value #ff');
+    expect(() => hex2RgbColor(hex)).toThrow('Invalid hex color value #ff');
+  });
+});
+
+describe('hex2PrintingColor (CMYK)', () => {
+  const expectCmyk = (hex: string, cyan: number, magenta: number, yellow: number, key: number) => {
+    const result = hex2PrintingColor(hex, 'cmyk');
+
+    expect(result?.type).toBe('CMYK');
+    const color = result as CMYK;
+    expect(color.cyan).toBeCloseTo(cyan, 5);
+    expect(color.magenta).toBeCloseTo(magenta, 5);
+    expect(color.yellow).toBeCloseTo(yellow, 5);
+    expect(color.key).toBeCloseTo(key, 5);
+  };
+
+  it('should convert black to full key', () => {
+    expectCmyk('#000000', 0, 0, 0, 1);
+  });
+
+  it('should convert white to no ink', () => {
+    expectCmyk('#ffffff', 0, 0, 0, 0);
+  });
+
+  it('should convert RGB primary colors with zero channels', () => {
+    expectCmyk('#ff0000', 0, 1, 1, 0);
+    expectCmyk('#00ff00', 1, 0, 1, 0);
+    expectCmyk('#0000ff', 1, 1, 0, 0);
+  });
+
+  it('should convert CMY secondary colors with zero channels', () => {
+    expectCmyk('#ffff00', 0, 0, 1, 0);
+    expectCmyk('#ff00ff', 0, 1, 0, 0);
+    expectCmyk('#00ffff', 1, 0, 0, 0);
+  });
+
+  it('should convert mixed and gray colors', () => {
+    expectCmyk('#ff8000', 0, 0.498039, 1, 0);
+    expectCmyk('#808080', 0, 0, 0, 0.498039);
   });
 });
 
@@ -238,5 +283,22 @@ describe('createSvgStr', () => {
     Object.entries(customAttrs).forEach(([key, value]) => {
       expect(svgStr).toContain(`${key}="${value}"`);
     });
+  });
+
+  it('should escape attribute values and drop unsafe attributes', () => {
+    const icon = createSvgStr(
+      [['path', { d: 'M0 0', fill: '"quote" & <tag>', onload: 'alert(1)' }]] as unknown as IconNode,
+      { stroke: '"quote" & <tag>', onload: 'alert(1)' } as Record<string, string>,
+    );
+
+    expect(icon).toContain('fill="&quot;quote&quot; &amp; &lt;tag&gt;"');
+    expect(icon).toContain('stroke="&quot;quote&quot; &amp; &lt;tag&gt;"');
+    expect(icon).not.toContain(' onload=');
+  });
+
+  it('should reject unsupported SVG tags', () => {
+    expect(() =>
+      createSvgStr([['script', { d: 'M0 0' }]] as unknown as IconNode),
+    ).toThrow('Invalid SVG tag name: script');
   });
 });

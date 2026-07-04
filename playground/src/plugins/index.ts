@@ -1,8 +1,10 @@
 import {
   multiVariableText,
   text,
+  list,
   barcodes,
   image,
+  signature,
   svg,
   line,
   table,
@@ -14,14 +16,15 @@ import {
   select,
   checkbox,
   radioGroup,
+  circleMark,
 } from '@pdfme/schemas';
-import { signature } from './signature';
 
 export const getPlugins = () => {
   return {
     Text: text,
     'Multi-Variable Text': multiVariableText,
     Table: table,
+    List: list,
     Line: line,
     Rectangle: rectangle,
     Ellipse: ellipse,
@@ -35,6 +38,7 @@ export const getPlugins = () => {
     Select: select,
     Checkbox: checkbox,
     RadioGroup: radioGroup,
+    'Circle Mark': circleMark,
     // JAPANPOST: barcodes.japanpost,
     EAN13: barcodes.ean13,
     // EAN8: barcodes.ean8,

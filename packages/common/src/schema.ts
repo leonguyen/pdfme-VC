@@ -33,10 +33,15 @@ export const Dict = z.object({
   addPageAfter: z.string(),
   removePage: z.string(),
   removePageConfirm: z.string(),
+  zoomIn: z.string(),
+  zoomOut: z.string(),
+  fitWidth: z.string(),
+  fitHeight: z.string(),
   // --------------------validation-------------------
   'validation.uniqueName': z.string(),
   'validation.hexColor': z.string(),
   'validation.dateTimeFormat': z.string(),
+  'validation.outOfBounds': z.string(),
 
   // -----------------used in schemas-----------------
   'schemas.color': z.string(),
@@ -65,12 +70,26 @@ export const Dict = z.object({
   'schemas.text.max': z.string(),
   'schemas.text.fit': z.string(),
   'schemas.text.dynamicFontSize': z.string(),
+  'schemas.text.overflow': z.string(),
+  'schemas.text.overflowVisible': z.string(),
+  'schemas.text.overflowExpand': z.string(),
   'schemas.text.format': z.string(),
+  'schemas.text.plain': z.string(),
+  'schemas.text.inlineMarkdown': z.string(),
+  'schemas.text.markdownFonts': z.string(),
+  'schemas.text.boldFont': z.string(),
+  'schemas.text.italicFont': z.string(),
+  'schemas.text.boldItalicFont': z.string(),
+  'schemas.text.codeFont': z.string(),
+  'schemas.text.variantFallback': z.string(),
+  'schemas.text.synthetic': z.string(),
+  'schemas.text.error': z.string(),
   'schemas.radius': z.string(),
 
   'schemas.mvt.typingInstructions': z.string(),
   'schemas.mvt.sampleField': z.string(),
   'schemas.mvt.variablesSampleData': z.string(),
+  'schemas.mvt.placeholderDynamicVariable': z.string(),
 
   'schemas.barcodes.barColor': z.string(),
   'schemas.barcodes.includetext': z.string(),
@@ -78,6 +97,7 @@ export const Dict = z.object({
   'schemas.table.alternateBackgroundColor': z.string(),
   'schemas.table.tableStyle': z.string(),
   'schemas.table.showHead': z.string(),
+  'schemas.table.repeatHead': z.string(),
   'schemas.table.headStyle': z.string(),
   'schemas.table.bodyStyle': z.string(),
   'schemas.table.columnStyle': z.string(),
@@ -89,12 +109,30 @@ export const Dict = z.object({
   'schemas.select.optionPlaceholder': z.string(),
 
   'schemas.radioGroup.groupName': z.string(),
+
+  'schemas.list.listStyle': z.string(),
+  'schemas.list.bullet': z.string(),
+  'schemas.list.ordered': z.string(),
+  'schemas.list.markerWidth': z.string(),
+  'schemas.list.markerGap': z.string(),
+  'schemas.list.indentSize': z.string(),
+  'schemas.list.itemSpacing': z.string(),
+  'schemas.list.addItem': z.string(),
+  'schemas.list.removeItem': z.string(),
+  'schemas.list.indentItem': z.string(),
+  'schemas.list.outdentItem': z.string(),
 });
 export const Mode = z.enum(['viewer', 'form', 'designer']);
 
 export const ColorType = z.enum(['rgb', 'cmyk']).optional();
 
 export const Size = z.object({ height: z.number(), width: z.number() });
+
+export const DynamicLayoutSplitRange = z.object({
+  unit: z.string().min(1),
+  start: z.number(),
+  end: z.number().optional(),
+});
 
 export const Schema = z
   .object({
@@ -108,7 +146,7 @@ export const Schema = z
     opacity: z.number().optional(),
     readOnly: z.boolean().optional(),
     required: z.boolean().optional(),
-    __bodyRange: z.object({ start: z.number(), end: z.number().optional() }).optional(),
+    __splitRange: DynamicLayoutSplitRange.optional(),
     __isSplit: z.boolean().optional(),
   })
   .passthrough();
@@ -117,7 +155,9 @@ const SchemaForUIAdditionalInfo = z.object({ id: z.string() });
 export const SchemaForUI = Schema.merge(SchemaForUIAdditionalInfo);
 
 const ArrayBufferSchema: z.ZodSchema<ArrayBuffer> = z.any().refine((v) => v instanceof ArrayBuffer);
-const Uint8ArraySchema: z.ZodSchema<Uint8Array> = z.any().refine((v) => v instanceof Uint8Array);
+const Uint8ArraySchema: z.ZodSchema<Uint8Array<ArrayBuffer>> = z
+  .any()
+  .refine((v) => v instanceof Uint8Array && v.buffer instanceof ArrayBuffer);
 
 export const BlankPdf = z.object({
   width: z.number(),
@@ -131,7 +171,7 @@ export const CustomPdf = z.union([z.string(), ArrayBufferSchema, Uint8ArraySchem
 export const BasePdf = z.union([CustomPdf, BlankPdf]);
 
 // Legacy keyed structure for BC - we convert to SchemaPageArray on import
-export const LegacySchemaPageArray = z.array(z.record(Schema));
+export const LegacySchemaPageArray = z.array(z.record(z.string(), Schema));
 export const SchemaPageArray = z.array(z.array(Schema));
 
 export const Template = z
@@ -142,9 +182,10 @@ export const Template = z
   })
   .passthrough();
 
-export const Inputs = z.array(z.record(z.any())).min(1);
+export const Inputs = z.array(z.record(z.string(), z.any())).min(1);
 
 export const Font = z.record(
+  z.string(),
   z.object({
     data: z.union([z.string(), ArrayBufferSchema, Uint8ArraySchema]),
     fallback: z.boolean().optional(),
@@ -154,11 +195,11 @@ export const Font = z.record(
 
 export const Plugin = z
   .object({
-    ui: z.function().args(z.any()).returns(z.any()),
-    pdf: z.function().args(z.any()).returns(z.any()),
+    ui: z.any(),
+    pdf: z.any(),
     propPanel: z.object({
       schema: z.unknown(),
-      widgets: z.record(z.any()).optional(),
+      widgets: z.record(z.string(), z.any()).optional(),
       defaultSchema: Schema,
     }),
     icon: z.string().optional(),
@@ -170,7 +211,7 @@ export const CommonOptions = z.object({ font: Font.optional() }).passthrough();
 const CommonProps = z.object({
   template: Template,
   options: CommonOptions.optional(),
-  plugins: z.record(Plugin).optional(),
+  plugins: z.record(z.string(), Plugin).optional(),
 });
 
 // -------------------generate-------------------
@@ -178,6 +219,7 @@ const CommonProps = z.object({
 export const GeneratorOptions = CommonOptions.extend({
   colorType: ColorType,
   author: z.string().optional(),
+  basePdfPassword: z.string().optional(),
   creationDate: z.date().optional(),
   creator: z.string().optional(),
   keywords: z.array(z.string()).optional(),

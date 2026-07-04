@@ -23,7 +23,9 @@ type RendererProps = Omit<
   value: string;
   outline: string;
   onChangeHoveringSchemaId?: (id: string | null) => void;
+  onChangeActiveSchemaId?: (id: string | null) => void;
   scale: number;
+  isActive?: boolean;
   selectable?: boolean;
 };
 
@@ -36,7 +38,7 @@ type ReRenderCheckProps = {
   options: UIOptions;
 };
 
-const useRerenderDependencies = (arg: ReRenderCheckProps) => {
+const useRenderKey = (arg: ReRenderCheckProps) => {
   const { plugin, value, mode, scale, schema, options } = arg;
   const _options = cloneDeep(options);
   if (_options.font) {
@@ -48,9 +50,9 @@ const useRerenderDependencies = (arg: ReRenderCheckProps) => {
 
   return useMemo(() => {
     if (plugin?.uninterruptedEditMode && mode === 'designer') {
-      return [mode];
+      return mode;
     } else {
-      return [value, mode, scale, JSON.stringify(schema), optionStr];
+      return JSON.stringify([value, mode, scale, schema, optionStr]);
     }
   }, [value, mode, scale, schema, optionStr, plugin]);
 };
@@ -59,44 +61,68 @@ const Wrapper = ({
   children,
   outline,
   onChangeHoveringSchemaId,
+  onChangeActiveSchemaId,
   schema,
+  mode,
+  isActive = false,
   selectable = true,
-}: RendererProps & { children: ReactNode }) => (
-  <div
-    title={schema.name}
-    onMouseEnter={() => onChangeHoveringSchemaId && onChangeHoveringSchemaId(schema.id)}
-    onMouseLeave={() => onChangeHoveringSchemaId && onChangeHoveringSchemaId(null)}
-    className={selectable ? SELECTABLE_CLASSNAME : ''}
-    id={schema.id}
-    style={{
-      position: 'absolute',
-      cursor: schema.readOnly ? 'initial' : 'pointer',
-      height: schema.height * ZOOM,
-      width: schema.width * ZOOM,
-      top: schema.position.y * ZOOM,
-      left: schema.position.x * ZOOM,
-      transform: `rotate(${schema.rotate ?? 0}deg)`,
-      opacity: schema.opacity ?? 1,
-      outline,
-    }}
-  >
-    {schema.required && (
-      <span
-        style={{
-          color: 'red',
-          position: 'absolute',
-          top: -12,
-          left: -12,
-          fontSize: 18,
-          fontWeight: 700,
-        }}
-      >
-        *
-      </span>
-    )}
-    {children}
-  </div>
-);
+}: RendererProps & { children: ReactNode }) => {
+  const { token } = antdTheme.useToken();
+  const isFormEditable = mode === 'form' && !schema.readOnly;
+  const activateSchema = () => {
+    if (isFormEditable) onChangeActiveSchemaId?.(schema.id);
+  };
+
+  return (
+    <div
+      title={schema.name}
+      onMouseEnter={() => onChangeHoveringSchemaId && onChangeHoveringSchemaId(schema.id)}
+      onMouseLeave={() => onChangeHoveringSchemaId && onChangeHoveringSchemaId(null)}
+      onPointerDownCapture={activateSchema}
+      onClickCapture={activateSchema}
+      onFocusCapture={activateSchema}
+      onBlurCapture={(event) => {
+        const nextTarget = event.relatedTarget;
+        if (!(nextTarget instanceof Node) || !event.currentTarget.contains(nextTarget)) {
+          onChangeActiveSchemaId?.(null);
+        }
+      }}
+      className={selectable ? SELECTABLE_CLASSNAME : ''}
+      id={schema.id}
+      style={{
+        position: 'absolute',
+        cursor: schema.readOnly ? 'initial' : 'pointer',
+        height: schema.height * ZOOM,
+        width: schema.width * ZOOM,
+        top: schema.position.y * ZOOM,
+        left: schema.position.x * ZOOM,
+        transform: `rotate(${schema.rotate ?? 0}deg)`,
+        opacity: schema.opacity ?? 1,
+        outline,
+        boxShadow: isActive
+          ? `0 0 0 2px ${token.colorPrimary}, 0 0 0 4px ${token.colorPrimaryBg}`
+          : undefined,
+        zIndex: isActive ? 1 : undefined,
+      }}
+    >
+      {schema.required && (
+        <span
+          style={{
+            color: 'red',
+            position: 'absolute',
+            top: -12,
+            left: -12,
+            fontSize: 18,
+            fontWeight: 700,
+          }}
+        >
+          *
+        </span>
+      )}
+      {children}
+    </div>
+  );
+};
 
 const Renderer = (props: RendererProps) => {
   const { schema, basePdf, value, mode, onChange, stopEditing, tabIndex, placeholder, scale } =
@@ -110,8 +136,41 @@ const Renderer = (props: RendererProps) => {
   const ref = useRef<HTMLDivElement>(null);
   const _cache = useContext(CacheContext);
   const plugin = pluginsRegistry.findByType(schema.type);
+  const renderArgsRef = useRef({
+    plugin,
+    value,
+    schema,
+    basePdf,
+    mode,
+    onChange,
+    stopEditing,
+    tabIndex,
+    placeholder,
+    options,
+    theme,
+    i18n,
+    scale,
+    _cache,
+  });
 
-  const reRenderDependencies = useRerenderDependencies({
+  renderArgsRef.current = {
+    plugin,
+    value,
+    schema,
+    basePdf,
+    mode,
+    onChange,
+    stopEditing,
+    tabIndex,
+    placeholder,
+    options,
+    theme,
+    i18n,
+    scale,
+    _cache,
+  };
+
+  const renderKey = useRenderKey({
     plugin,
     value,
     mode,
@@ -121,34 +180,47 @@ const Renderer = (props: RendererProps) => {
   });
 
   useEffect(() => {
-    if (!plugin?.ui || !ref.current || !schema.type) return;
+    const element = ref.current;
+    const renderArgs = renderArgsRef.current;
+    if (!renderArgs.plugin?.ui || !element || !schema.type) return;
 
-    ref.current.innerHTML = '';
-    const render = plugin.ui;
+    let cancelled = false;
+    element.innerHTML = '';
+    element.dataset.pdfmeRenderReady = 'false';
+    const render = renderArgs.plugin.ui;
 
-    void render({
-      value,
-      schema,
-      basePdf,
-      rootElement: ref.current,
-      mode,
-      onChange,
-      stopEditing,
-      tabIndex,
-      placeholder,
-      options,
-      theme,
-      i18n,
-      scale,
-      _cache,
+    void Promise.resolve(
+      render({
+        value: renderArgs.value,
+        schema: renderArgs.schema,
+        basePdf: renderArgs.basePdf,
+        rootElement: element,
+        mode: renderArgs.mode,
+        onChange: renderArgs.onChange,
+        stopEditing: renderArgs.stopEditing,
+        tabIndex: renderArgs.tabIndex,
+        placeholder: renderArgs.placeholder,
+        options: renderArgs.options,
+        theme: renderArgs.theme,
+        i18n: renderArgs.i18n,
+        scale: renderArgs.scale,
+        _cache: renderArgs._cache,
+      }),
+    ).finally(() => {
+      if (!cancelled) {
+        element.dataset.pdfmeRenderReady = 'true';
+      }
     });
 
     return () => {
-      if (ref.current) {
-        ref.current.innerHTML = '';
+      cancelled = true;
+      if (element) {
+        element.dispatchEvent(new Event('beforeRemove'));
+        element.innerHTML = '';
+        delete element.dataset.pdfmeRenderReady;
       }
     };
-  }, reRenderDependencies);
+  }, [renderKey, schema.type]);
 
   if (!plugin) {
     console.error(`[@pdfme/ui] Renderer for type ${schema.type} not found. 

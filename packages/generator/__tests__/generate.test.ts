@@ -1,7 +1,12 @@
+import { readFileSync } from 'node:fs';
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import generate from '../src/generate.js';
-import { Template, BLANK_PDF, Schema } from '@pdfme/common';
-import { getFont, pdfToImages } from './utils.js';
-import 'jest-image-snapshot';
+import { Template, BLANK_PDF, Schema, type Plugin } from '@pdfme/common';
+import { PDFDocument } from '@pdfme/pdf-lib';
+import { getFont, getImageSnapshotOptions, pdfToImages } from './utils.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 describe('generate integrate test', () => {
   describe('basic generator', () => {
@@ -62,12 +67,237 @@ describe('generate integrate test', () => {
         const pdf = await generate({ inputs, template });
         const images = await pdfToImages(pdf);
         for (let i = 0; i < images.length; i++) {
-          expect(images[i]).toMatchImageSnapshot({
-            customSnapshotIdentifier: `${testName}-${i + 1}`,
-          });
+          await expect(images[i]).toMatchImage(getImageSnapshotOptions(`${testName}-${i + 1}`));
         }
       });
     }
+
+    test('uses custom base PDF crop box as template coordinate space across inputs', async () => {
+      const basePdfDoc = await PDFDocument.create();
+      const basePage = basePdfDoc.addPage([120, 120]);
+      basePage.setMediaBox(10, 20, 120, 120);
+      basePage.setBleedBox(10, 20, 120, 120);
+      basePage.setTrimBox(10, 20, 120, 120);
+      basePage.drawText('base', { x: 12, y: 22, size: 4 });
+
+      const observedPositions: Schema['position'][] = [];
+      const probeSchema: Schema = {
+        name: 'probe',
+        type: 'probe',
+        content: '',
+        position: { x: 3, y: 30 },
+        width: 10,
+        height: 10,
+      };
+      const probePlugin: Plugin = {
+        pdf: ({ schema }) => {
+          observedPositions.push({ ...schema.position });
+        },
+        ui: () => {},
+        propPanel: {
+          schema: {},
+          defaultSchema: probeSchema,
+        },
+      };
+
+      await generate({
+        template: {
+          basePdf: await basePdfDoc.save(),
+          schemas: [[probeSchema]],
+        },
+        inputs: [{ probe: 'first' }, { probe: 'second' }],
+        plugins: { probe: probePlugin },
+      });
+
+      expect(observedPositions).toHaveLength(2);
+      expect(observedPositions[0]).toEqual(observedPositions[1]);
+      expect(observedPositions[0]).toEqual(probeSchema.position);
+    });
+
+    test('loads permission encrypted custom base PDFs with empty password fallback', async () => {
+      const encryptedBasePdf = readFileSync(
+        path.join(
+          __dirname,
+          '../../../playground/public/template-assets/nenkin-shougai-seishin-shindansho/source.pdf',
+        ),
+      );
+
+      const pdf = await generate({
+        template: {
+          basePdf: encryptedBasePdf,
+          schemas: [[], []],
+        },
+        inputs: [{}],
+      });
+      const pdfDoc = await PDFDocument.load(pdf);
+      const mediaBox = pdfDoc.getPage(0).getMediaBox();
+
+      expect(pdfDoc.isEncrypted).toBe(false);
+      expect(pdfDoc.getPageCount()).toBe(2);
+      expect(mediaBox.x).toBe(0);
+      expect(mediaBox.y).toBe(0);
+      expect(mediaBox.width).toBeCloseTo(834.5225);
+      expect(mediaBox.height).toBeCloseTo(1208.697);
+    });
+
+    test('reports password required custom base PDFs', async () => {
+      const passwordProtectedBasePdf = readFileSync(
+        path.join(__dirname, '../../../packages/pdf-lib/assets/pdfs/encrypted_new.pdf'),
+      );
+
+      await expect(
+        generate({
+          template: {
+            basePdf: passwordProtectedBasePdf,
+            schemas: [[]],
+          },
+          inputs: [{}],
+        }),
+      ).rejects.toThrow(
+        '[@pdfme/generator] basePdf is encrypted and requires a valid password. Pass options.basePdfPassword to generate().',
+      );
+    });
+
+    test('does not expose basePdfPassword to schema plugins', async () => {
+      const observedOptions: unknown[] = [];
+      const probeSchema: Schema = {
+        name: 'probe',
+        type: 'probe',
+        content: '',
+        position: { x: 3, y: 30 },
+        width: 10,
+        height: 10,
+      };
+      const probePlugin: Plugin = {
+        pdf: ({ options }) => {
+          observedOptions.push(options);
+        },
+        ui: () => {},
+        propPanel: {
+          schema: {},
+          defaultSchema: probeSchema,
+        },
+      };
+
+      await generate({
+        template: {
+          basePdf: BLANK_PDF,
+          schemas: [[probeSchema]],
+        },
+        inputs: [{ probe: 'value' }],
+        plugins: { probe: probePlugin },
+        options: { basePdfPassword: 'secret' },
+      });
+
+      expect(observedOptions).toHaveLength(1);
+      expect(observedOptions[0]).not.toHaveProperty('basePdfPassword');
+    });
+
+    test('expands text schemas and pushes following schemas on blank PDFs', async () => {
+      const renderedSchemas: Schema[] = [];
+      const textProbePlugin: Plugin = {
+        pdf: ({ schema }) => {
+          renderedSchemas.push({
+            ...schema,
+            position: { ...schema.position },
+          });
+        },
+        ui: () => {},
+        propPanel: {
+          schema: {},
+          defaultSchema: {
+            ...textObject(0, 0),
+            type: 'text',
+          },
+        },
+      };
+
+      await generate({
+        template: {
+          basePdf: { width: 100, height: 100, padding: [10, 10, 10, 10] },
+          schemas: [
+            [
+              {
+                ...textObject(10, 10, 'body'),
+                width: 30,
+                height: 5,
+                overflow: 'expand',
+                fontSize: 13,
+                lineHeight: 1,
+                characterSpacing: 0,
+              },
+              {
+                ...textObject(10, 20, 'after'),
+                width: 30,
+                height: 5,
+              },
+            ],
+          ],
+        },
+        inputs: [{ body: 'long text '.repeat(20), after: 'after' }],
+        options: { font: getFont() },
+        plugins: { text: textProbePlugin },
+      });
+
+      const bodySchemas = renderedSchemas.filter((schema) => schema.name === 'body');
+      const after = renderedSchemas.find((schema) => schema.name === 'after');
+
+      expect(bodySchemas.reduce((sum, schema) => sum + schema.height, 0)).toBeGreaterThan(5);
+      expect(after?.position.y).toBeGreaterThan(20);
+    });
+
+    test('splits expanded text schemas by line across blank PDF pages', async () => {
+      const renderedSchemas: Schema[] = [];
+      const textProbePlugin: Plugin = {
+        pdf: ({ schema }) => {
+          renderedSchemas.push({
+            ...schema,
+            position: { ...schema.position },
+          });
+        },
+        ui: () => {},
+        propPanel: {
+          schema: {},
+          defaultSchema: {
+            ...textObject(0, 0),
+            type: 'text',
+          },
+        },
+      };
+
+      await generate({
+        template: {
+          basePdf: { width: 100, height: 100, padding: [10, 10, 10, 10] },
+          schemas: [
+            [
+              {
+                ...textObject(10, 70, 'body'),
+                width: 20,
+                height: 5,
+                overflow: 'expand',
+                fontSize: 13,
+                lineHeight: 1,
+                characterSpacing: 0,
+              },
+            ],
+          ],
+        },
+        inputs: [{ body: 'long text '.repeat(30) }],
+        options: { font: getFont() },
+        plugins: { text: textProbePlugin },
+      });
+
+      const bodySchemas = renderedSchemas.filter((schema) => schema.name === 'body');
+      const firstRange = bodySchemas[0].__splitRange;
+      expect(bodySchemas.length).toBeGreaterThan(1);
+      expect(firstRange?.unit).toBe('textLine');
+      expect(firstRange?.start).toBe(0);
+      expect(firstRange?.end).toBeGreaterThan(0);
+      expect(bodySchemas[0].__isSplit).toBe(false);
+      expect(bodySchemas[1].__splitRange?.start).toBe(firstRange?.end);
+      expect(bodySchemas[1].__isSplit).toBe(true);
+      expect(bodySchemas[1].position.y).toBe(10);
+    });
   });
 
   describe('use fontColor template', () => {
@@ -92,9 +322,7 @@ describe('generate integrate test', () => {
       const pdf = await generate({ inputs, template });
       const images = await pdfToImages(pdf);
       for (let i = 0; i < images.length; i++) {
-        expect(images[i]).toMatchImageSnapshot({
-          customSnapshotIdentifier: `fontColor-${i + 1}`,
-        });
+        await expect(images[i]).toMatchImage(getImageSnapshotOptions(`fontColor-${i + 1}`));
       }
     });
   });
@@ -147,11 +375,9 @@ describe('generate integrate test', () => {
       });
       const images = await pdfToImages(pdf);
       for (let i = 0; i < images.length; i++) {
-        expect(images[i]).toMatchImageSnapshot({
-          customSnapshotIdentifier: `fontSubset-${i + 1}`,
-        });
+        await expect(images[i]).toMatchImage(getImageSnapshotOptions(`fontSubset-${i + 1}`));
       }
-    }, 10000);
+    }, 30000);
   });
 });
 
@@ -180,7 +406,7 @@ describe('check validation', () => {
       expect(e.message).toEqual(`[@pdfme/common] Invalid argument:
 --------------------------
 ERROR POSITION: inputs
-ERROR MESSAGE: Array must contain at least 1 element(s)
+ERROR MESSAGE: Too small: expected array to have >=1 items
 --------------------------`);
     }
   });

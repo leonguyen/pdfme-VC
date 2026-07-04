@@ -1,17 +1,17 @@
 # Template Contribution Guide ❤️
 
 Add your template to pdfme's Example Templates!  
-**The [Template List page](/templates) is one of the most important pages on pdfme.com, created to help new users find templates that match their requirements and save time.**
+**The [playground template gallery](https://playground.pdfme.com/) is one of the most important entry points for pdfme, created to help new users find templates that match their requirements and save time.**
 
 By adding your template, you can contribute to the pdfme community.  
-We use GitHub pull requests for template additions - no builds or code changes required.  
+We use GitHub pull requests for template additions - usually this only requires template files and metadata.
 
 Even if you're new to OSS contributions, you can easily contribute by following this guide.
 
 ## Template Addition Steps
 
 ### 1. Create Your Template
-Design your template in the [Template Designer](/template-design), then download `template.json` using the `DL Template` button
+Design your template in the [playground Designer](https://playground.pdfme.com/designer), then download `template.json` using the `Template JSON` button
 
 ### 2. Prepare Repository
 1. **[Create Fork]**  
@@ -36,7 +36,7 @@ Design your template in the [Template Designer](/template-design), then download
    ```bash
    mkdir -p playground/public/template-assets/my-new-template
    ```
-   - Directory name will appear as `My New Template` on [Template List page](/templates)
+   - Directory name will appear as `My New Template` in the [playground template gallery](https://playground.pdfme.com/)
 
 2. **[Place Files]**  
    Place downloaded `template.json` in the new directory  
@@ -48,7 +48,29 @@ Design your template in the [Template Designer](/template-design), then download
    }
    ```
 
+3. **[Add Metadata]**
+   Add `metadata.json` in the same directory. This metadata is used by the template gallery filters and cards.
+   ```json
+   {
+     "description": "A short description of what this template is useful for.",
+     "tags": ["Invoice", "Business"]
+   }
+   ```
+
+   Optional fields:
+   - `title`: display title. If omitted, the directory name is converted from kebab-case.
+   - `order`: gallery sort order for featured templates. Most contributions can omit this.
+   - `tags`: short filter labels such as `Invoice`, `Business`, `CJK`, `Form`, or `Table`.
+
 Reference: https://github.com/pdfme/pdfme/tree/main/playground/public/template-assets/invoice
+
+4. **[Regenerate Gallery Metadata]**
+   Run:
+   ```bash
+   npm --prefix playground run generate-template-assets
+   ```
+
+   This updates the generated template index used by the playground.
 
 ### 4. Commit Changes
 1. **[Record Changes]**  
